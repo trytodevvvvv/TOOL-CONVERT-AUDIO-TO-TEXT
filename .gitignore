@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+config.json
+*.bak
+*.pt
+.cache/
+CapCut_STT_Tool.rar
