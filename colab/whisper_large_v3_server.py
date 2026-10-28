@@ -6,6 +6,8 @@
 # ==============================================================================
 
 import os
+os.environ["HF_HUB_DISABLE_IMPLICIT_TOKEN"] = "1"
+os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "0"
 import io
 import time
 import base64
@@ -78,9 +80,10 @@ if torch.cuda.is_available():
 base_model = WhisperModel(
     "large-v3",
     device=DEVICE,
+    device_index=0 if DEVICE == "cuda" else 0,
     compute_type=COMPUTE_TYPE,
     cpu_threads=4,
-    num_workers=2
+    num_workers=1
 )
 
 # Khởi tạo Batched Inference Pipeline để xử lý song song các block âm thanh

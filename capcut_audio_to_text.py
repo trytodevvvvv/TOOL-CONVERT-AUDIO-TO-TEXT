@@ -118,7 +118,7 @@ def get_colab_run_code():
 # ==============================================================================
 # BƯỚC 1: Cài đặt thư viện Faster-Whisper, FastAPI & Cloudflared
 # ==============================================================================
-!pip install -q faster-whisper "av<18" nvidia-cublas-cu12 nvidia-cudnn-cu12 fastapi uvicorn pydantic nest-asyncio soundfile
+!pip install -q faster-whisper "ctranslate2==4.7.0" "av<18" nvidia-cublas-cu12 nvidia-cudnn-cu12 fastapi uvicorn pydantic nest-asyncio soundfile
 !wget -q -nc https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
 !dpkg -i cloudflared-linux-amd64.deb > /dev/null 2>&1
 print("✅ [1/2] Đã cài đặt hoàn tất các gói thư viện!")
@@ -127,6 +127,8 @@ print("✅ [1/2] Đã cài đặt hoàn tất các gói thư viện!")
 # BƯỚC 2: Khởi chạy Server Whisper Large-v3 (Batched 13.5GB VRAM) & Cloudflare
 # ==============================================================================
 import os, io, time, base64, tempfile, threading, subprocess, re, uuid, gc, glob, site, ctypes
+os.environ["HF_HUB_DISABLE_IMPLICIT_TOKEN"] = "1"
+os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "0"
 from typing import Optional
 
 # 1. Cấu hình và nạp thư viện CUDA 12 (libcublas, libcudnn) cho CTranslate2
@@ -174,7 +176,7 @@ BATCH_SIZE = 30  # Khai thác tối đa ~13.5 GB VRAM trên Tesla T4
 BEAM_SIZE = 5    # SOTA accuracy
 
 print(f"--> Đang nạp model Whisper Large-v3 vào GPU ({torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU'})...")
-base_model = WhisperModel("large-v3", device=DEVICE, compute_type=COMPUTE_TYPE, cpu_threads=4, num_workers=2)
+base_model = WhisperModel("large-v3", device=DEVICE, device_index=0 if DEVICE == "cuda" else 0, compute_type=COMPUTE_TYPE, cpu_threads=4, num_workers=1)
 
 try:
     batched_pipeline = BatchedInferencePipeline(model=base_model)
