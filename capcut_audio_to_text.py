@@ -690,8 +690,6 @@ class CapCutBatchStudioApp(tk.Tk):
         super().__init__()
         
         self.title("CapCut Audio to Text Tool - Google Colab Tesla T4 (Batch Studio)")
-        self.geometry("1280x840")
-        self.minsize(1120, 750)
         
         # Bảng màu Dark Studio cao cấp (lấy cảm hứng từ Tool Chia Segment)
         self.bg_main = "#0B0F19"
@@ -721,7 +719,6 @@ class CapCutBatchStudioApp(tk.Tk):
         self.var_output_dir = tk.StringVar(value=self.config.get("output_dir", ""))
         
         # Danh sách hàng đợi
-        # Mỗi item: {"id": str, "name": str, "type": "project"|"file", "path": str, "size": str, "status": str}
         self.queue_items = []
         self.stop_event = threading.Event()
         self.is_processing = False
@@ -737,6 +734,7 @@ class CapCutBatchStudioApp(tk.Tk):
         
         self._init_styles()
         self._create_widgets()
+        self._center_window()
         
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         
@@ -744,6 +742,26 @@ class CapCutBatchStudioApp(tk.Tk):
             self.after(500, self._refresh_drafts_list)
         if self.var_colab_url.get():
             self.after(1000, self._test_colab_connection)
+
+    def _center_window(self):
+        """
+        Tự động tính toán kích thước và tọa độ để cửa sổ luôn nằm ở chính giữa màn hình Windows,
+        tương thích hoàn hảo với mọi độ phân giải và tỉ lệ Windows Display Scaling (125%/150%).
+        """
+        self.update_idletasks()
+        screen_w = self.winfo_screenwidth()
+        screen_h = self.winfo_screenheight()
+        
+        # Tính kích thước tối ưu (vừa vặn, không bị tràn thanh Taskbar)
+        win_w = min(1200, int(screen_w * 0.92))
+        win_h = min(700, int(screen_h * 0.86))
+        
+        # Căn giữa theo X và Y (đã trừ hao 45px cho thanh Taskbar phía dưới)
+        x = max(0, (screen_w - win_w) // 2)
+        y = max(10, (screen_h - win_h - 45) // 2)
+        
+        self.geometry(f"{win_w}x{win_h}+{x}+{y}")
+        self.minsize(960, 560)
 
     def _init_styles(self):
         self.style = ttk.Style(self)
@@ -765,77 +783,77 @@ class CapCutBatchStudioApp(tk.Tk):
 
     def _create_widgets(self):
         # 1. TOP HEADER & COLAB BAR (Thanh công cụ kết nối & Copy Code)
-        top_bar = tk.Frame(self, bg=self.bg_card, bd=1, relief=tk.SOLID, padx=15, pady=10)
-        top_bar.pack(fill=tk.X, padx=15, pady=(12, 6))
+        top_bar = tk.Frame(self, bg=self.bg_card, bd=1, relief=tk.SOLID, padx=12, pady=6)
+        top_bar.pack(fill=tk.X, padx=12, pady=(6, 4))
         
         # Hàng 1: Tiêu đề
         row_title = tk.Frame(top_bar, bg=self.bg_card)
-        row_title.pack(fill=tk.X, pady=(0, 8))
+        row_title.pack(fill=tk.X, pady=(0, 5))
         
-        tk.Label(row_title, text="🎙️ CAPCUT AUDIO TO TEXT", font=("Segoe UI", 15, "bold"), fg=self.accent_cyan, bg=self.bg_card).pack(side=tk.LEFT)
-        tk.Label(row_title, text="• GOOGLE COLAB TESLA T4 16GB (BATCH STUDIO)", font=("Segoe UI", 11, "bold"), fg=self.accent_green, bg=self.bg_card).pack(side=tk.LEFT, padx=(10, 0))
+        tk.Label(row_title, text="🎙️ CAPCUT AUDIO TO TEXT", font=("Segoe UI", 14, "bold"), fg=self.accent_cyan, bg=self.bg_card).pack(side=tk.LEFT)
+        tk.Label(row_title, text="• GOOGLE COLAB TESLA T4 16GB (BATCH STUDIO)", font=("Segoe UI", 10, "bold"), fg=self.accent_green, bg=self.bg_card).pack(side=tk.LEFT, padx=(8, 0))
         
         # Hàng 2: Nhập Link Colab, Kết nối, Copy Code, Mở Colab
         row_conn = tk.Frame(top_bar, bg=self.bg_card)
         row_conn.pack(fill=tk.X)
         
-        tk.Label(row_conn, text="Link Colab:", font=("Segoe UI", 10, "bold"), fg=self.fg_main, bg=self.bg_card).pack(side=tk.LEFT, padx=(0, 6))
+        tk.Label(row_conn, text="Link Colab:", font=("Segoe UI", 9, "bold"), fg=self.fg_main, bg=self.bg_card).pack(side=tk.LEFT, padx=(0, 6))
         
         self.entry_colab = tk.Entry(row_conn, textvariable=self.var_colab_url, font=("Consolas", 10), bg=self.bg_card_inner, fg="#FFFFFF",
                                     insertbackground="#FFFFFF", bd=1, relief=tk.SOLID)
-        self.entry_colab.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 8), ipady=3)
+        self.entry_colab.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 8), ipady=2)
         
         self.btn_connect = tk.Button(row_conn, text="🔗 Kết nối", font=("Segoe UI", 9, "bold"), bg=self.accent_cyan, fg="#0F172A",
-                                     activebackground="#7dd3fc", activeforeground="#0F172A", bd=0, padx=14, pady=3, cursor="hand2", command=self._test_colab_connection)
+                                     activebackground="#7dd3fc", activeforeground="#0F172A", bd=0, padx=12, pady=2, cursor="hand2", command=self._test_colab_connection)
         self.btn_connect.pack(side=tk.LEFT, padx=(0, 8))
         
         self.lbl_colab_status = tk.Label(row_conn, textvariable=self.var_colab_status, font=("Segoe UI", 9, "bold"), fg=self.fg_dim, bg=self.bg_card)
-        self.lbl_colab_status.pack(side=tk.LEFT, padx=(0, 15))
+        self.lbl_colab_status.pack(side=tk.LEFT, padx=(0, 10))
         
         # Nút 1-Click Copy Code Colab
         self.btn_copy_code = tk.Button(row_conn, text="📋 Copy Code Colab", font=("Segoe UI", 9, "bold"), bg="#1E1B4B", fg=self.accent_cyan,
-                                       activebackground="#312E81", activeforeground="#FFFFFF", bd=1, relief=tk.SOLID, padx=12, pady=3,
+                                       activebackground="#312E81", activeforeground="#FFFFFF", bd=1, relief=tk.SOLID, padx=10, pady=2,
                                        cursor="hand2", command=self._quick_copy_colab_code)
-        self.btn_copy_code.pack(side=tk.RIGHT, padx=(6, 0))
+        self.btn_copy_code.pack(side=tk.RIGHT, padx=(4, 0))
         
         btn_open_colab = tk.Button(row_conn, text="⚡ Mở Colab", font=("Segoe UI", 9), bg=self.btn_bg, fg="#FBBF24",
-                                   activebackground="#475569", activeforeground="#FFFFFF", bd=0, padx=10, pady=3,
+                                   activebackground="#475569", activeforeground="#FFFFFF", bd=0, padx=9, pady=2,
                                    cursor="hand2", command=lambda: webbrowser.open("https://colab.research.google.com/"))
         btn_open_colab.pack(side=tk.RIGHT)
 
         # 2. KHU VỰC LÀM VIỆC CHÍNH (2 CỘT)
         work_paned = tk.PanedWindow(self, orient=tk.HORIZONTAL, bg=self.bg_main, bd=0, sashwidth=6, sashrelief=tk.FLAT)
-        work_paned.pack(fill=tk.BOTH, expand=True, padx=15, pady=6)
+        work_paned.pack(fill=tk.BOTH, expand=True, padx=12, pady=(4, 8))
         
         # -------------------------------------------------------------
         # CỘT TRÁI: HÀNG ĐỢI (BATCH QUEUE) & TÙY CHỌN
         # -------------------------------------------------------------
         left_frame = tk.Frame(work_paned, bg=self.bg_main)
-        work_paned.add(left_frame, minsize=540)
+        work_paned.add(left_frame, minsize=520)
         
         # Card 1: Hàng đợi âm thanh / dự án
         card_queue = tk.LabelFrame(left_frame, text="1. Hàng Đợi Xử Lý Hàng Loạt (Batch Queue)", bg=self.bg_card, fg=self.accent_cyan,
-                                   font=("Segoe UI", 10, "bold"), padx=12, pady=8, bd=1, relief=tk.SOLID)
-        card_queue.pack(fill=tk.BOTH, expand=True, pady=(0, 8))
+                                   font=("Segoe UI", 10, "bold"), padx=10, pady=6, bd=1, relief=tk.SOLID)
+        card_queue.pack(fill=tk.BOTH, expand=True, pady=(0, 6))
         
         # Toolbar của hàng đợi
         q_toolbar = tk.Frame(card_queue, bg=self.bg_card)
-        q_toolbar.pack(fill=tk.X, pady=(0, 6))
+        q_toolbar.pack(fill=tk.X, pady=(0, 4))
         
         btn_add_files = tk.Button(q_toolbar, text="➕ Thêm Tệp", font=("Segoe UI", 8, "bold"), bg=self.accent_blue, fg="#FFFFFF",
-                                  activebackground="#1d4ed8", bd=0, padx=9, pady=3, cursor="hand2", command=self._add_audio_files)
-        btn_add_files.pack(side=tk.LEFT, padx=(0, 5))
+                                  activebackground="#1d4ed8", bd=0, padx=8, pady=2, cursor="hand2", command=self._add_audio_files)
+        btn_add_files.pack(side=tk.LEFT, padx=(0, 4))
         
         btn_add_folder = tk.Button(q_toolbar, text="📂 Thư Mục", font=("Segoe UI", 8, "bold"), bg=self.btn_bg, fg=self.fg_main,
-                                   activebackground="#475569", bd=0, padx=9, pady=3, cursor="hand2", command=self._add_audio_folder)
-        btn_add_folder.pack(side=tk.LEFT, padx=(0, 5))
+                                   activebackground="#475569", bd=0, padx=8, pady=2, cursor="hand2", command=self._add_audio_folder)
+        btn_add_folder.pack(side=tk.LEFT, padx=(0, 4))
         
         btn_remove_item = tk.Button(q_toolbar, text="🗑️ Xóa", font=("Segoe UI", 8), bg=self.btn_bg, fg=self.fg_main,
-                                    activebackground=self.accent_red, bd=0, padx=8, pady=3, cursor="hand2", command=self._remove_queue_item)
-        btn_remove_item.pack(side=tk.LEFT, padx=(0, 5))
+                                    activebackground=self.accent_red, bd=0, padx=7, pady=2, cursor="hand2", command=self._remove_queue_item)
+        btn_remove_item.pack(side=tk.LEFT, padx=(0, 4))
         
         btn_clear_all = tk.Button(q_toolbar, text="🔄 Xóa Hết", font=("Segoe UI", 8), bg=self.btn_bg, fg=self.fg_main,
-                                  activebackground="#7f1d1d", bd=0, padx=8, pady=3, cursor="hand2", command=self._clear_queue)
+                                  activebackground="#7f1d1d", bd=0, padx=7, pady=2, cursor="hand2", command=self._clear_queue)
         btn_clear_all.pack(side=tk.LEFT)
         
         self.lbl_queue_count = tk.Label(q_toolbar, text="0 mục", font=("Segoe UI", 8, "bold"), bg="#1E1B4B", fg=self.accent_cyan, padx=8, pady=2, bd=1, relief=tk.SOLID)
@@ -843,10 +861,10 @@ class CapCutBatchStudioApp(tk.Tk):
         
         # Bảng Treeview của hàng đợi
         tree_q_container = tk.Frame(card_queue, bg=self.bg_card_inner, bd=1, relief=tk.SOLID)
-        tree_q_container.pack(fill=tk.BOTH, expand=True, pady=(0, 6))
+        tree_q_container.pack(fill=tk.BOTH, expand=True, pady=(0, 4))
         
         q_cols = ("#", "name", "type", "status")
-        self.tree_queue = ttk.Treeview(tree_q_container, columns=q_cols, show="headings", style="Studio.Treeview", selectmode="extended")
+        self.tree_queue = ttk.Treeview(tree_q_container, columns=q_cols, show="headings", style="Studio.Treeview", selectmode="extended", height=6)
         self.tree_queue.heading("#", text="#")
         self.tree_queue.heading("name", text="Tên Mục (Tệp Media / Dự Án CapCut)")
         self.tree_queue.heading("type", text="Phân Loại")
@@ -878,23 +896,23 @@ class CapCutBatchStudioApp(tk.Tk):
         
         # Card 2: Cấu hình phụ đề & Master Action
         card_sub_opts = tk.LabelFrame(left_frame, text="2. Cấu hình Phụ Đề & Hành Động", bg=self.bg_card, fg=self.accent_cyan,
-                                      font=("Segoe UI", 10, "bold"), padx=12, pady=8, bd=1, relief=tk.SOLID)
+                                      font=("Segoe UI", 10, "bold"), padx=10, pady=5, bd=1, relief=tk.SOLID)
         card_sub_opts.pack(fill=tk.X)
         
         row_cfg = tk.Frame(card_sub_opts, bg=self.bg_card)
-        row_cfg.pack(fill=tk.X, pady=(0, 6))
+        row_cfg.pack(fill=tk.X, pady=(0, 4))
         
-        tk.Label(row_cfg, text="Ngôn ngữ voice:", font=("Segoe UI", 9), fg=self.fg_main, bg=self.bg_card).grid(row=0, column=0, sticky=tk.W, pady=3)
+        tk.Label(row_cfg, text="Ngôn ngữ voice:", font=("Segoe UI", 9), fg=self.fg_main, bg=self.bg_card).grid(row=0, column=0, sticky=tk.W, pady=2)
         cb_lang = ttk.Combobox(row_cfg, textvariable=self.var_language, values=list(self.lang_map.keys()), state="readonly", width=18, font=("Segoe UI", 9))
-        cb_lang.grid(row=0, column=1, sticky=tk.W, padx=8, pady=3)
+        cb_lang.grid(row=0, column=1, sticky=tk.W, padx=8, pady=2)
         
-        tk.Label(row_cfg, text="Giới hạn từ/đoạn:", font=("Segoe UI", 9), fg=self.fg_main, bg=self.bg_card).grid(row=0, column=2, sticky=tk.W, padx=(10, 0), pady=3)
+        tk.Label(row_cfg, text="Giới hạn từ/đoạn:", font=("Segoe UI", 9), fg=self.fg_main, bg=self.bg_card).grid(row=0, column=2, sticky=tk.W, padx=(10, 0), pady=2)
         sb_words = tk.Spinbox(row_cfg, from_=1, to=100, textvariable=self.var_max_words, width=6, bg=self.bg_card_inner, fg=self.fg_main, bd=1, relief=tk.SOLID, font=("Segoe UI", 9))
-        sb_words.grid(row=0, column=3, sticky=tk.W, padx=6, pady=3)
+        sb_words.grid(row=0, column=3, sticky=tk.W, padx=6, pady=2)
         
         # Chế độ phụ đề CapCut
         row_mode = tk.Frame(card_sub_opts, bg=self.bg_card)
-        row_mode.pack(fill=tk.X, pady=(2, 6))
+        row_mode.pack(fill=tk.X, pady=(1, 4))
         
         tk.Label(row_mode, text="Kiểu phụ đề CapCut:", font=("Segoe UI", 9, "bold"), fg=self.fg_main, bg=self.bg_card).pack(side=tk.LEFT, padx=(0, 10))
         r_group = tk.Radiobutton(row_mode, text="Nhóm Sub (Áp dụng cho tất cả)", variable=self.var_group_sub, value=True,
@@ -907,16 +925,16 @@ class CapCutBatchStudioApp(tk.Tk):
         
         # Nút Master hành động chạy hàng đợi
         row_action = tk.Frame(card_sub_opts, bg=self.bg_card)
-        row_action.pack(fill=tk.X, pady=(4, 2))
+        row_action.pack(fill=tk.X, pady=(2, 2))
         
         self.btn_run_batch = tk.Button(row_action, text="⚡ BẮT ĐẦU CHẠY HÀNG CHỜ (BATCH PROCESS)", font=("Segoe UI", 11, "bold"),
                                        bg=self.accent_cyan, fg="#0F172A", activebackground="#7dd3fc", activeforeground="#0F172A",
-                                       bd=0, height=2, cursor="hand2", command=self._start_batch_pipeline)
+                                       bd=0, pady=7, cursor="hand2", command=self._start_batch_pipeline)
         self.btn_run_batch.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 6))
         
         self.btn_stop_batch = tk.Button(row_action, text="⏹️ Dừng", font=("Segoe UI", 10, "bold"),
                                         bg=self.btn_bg, fg=self.accent_red, activebackground=self.accent_red, activeforeground="#FFFFFF",
-                                        bd=0, height=2, width=8, cursor="hand2", state=tk.DISABLED, command=self._stop_batch_pipeline)
+                                        bd=0, pady=7, width=8, cursor="hand2", state=tk.DISABLED, command=self._stop_batch_pipeline)
         self.btn_stop_batch.pack(side=tk.RIGHT)
 
         # -------------------------------------------------------------
@@ -927,12 +945,12 @@ class CapCutBatchStudioApp(tk.Tk):
         
         # Card 3: Danh sách dự án CapCut
         card_drafts = tk.LabelFrame(right_frame, text="3. Thư Mục Dự Án CapCut Trên Máy", bg=self.bg_card, fg=self.accent_cyan,
-                                    font=("Segoe UI", 10, "bold"), padx=12, pady=8, bd=1, relief=tk.SOLID)
-        card_drafts.pack(fill=tk.BOTH, expand=True, pady=(0, 8))
+                                    font=("Segoe UI", 10, "bold"), padx=10, pady=6, bd=1, relief=tk.SOLID)
+        card_drafts.pack(fill=tk.BOTH, expand=True, pady=(0, 6))
         
         # Thư mục Drafts
         row_draft_p = tk.Frame(card_drafts, bg=self.bg_card)
-        row_draft_p.pack(fill=tk.X, pady=(0, 6))
+        row_draft_p.pack(fill=tk.X, pady=(0, 4))
         
         tk.Label(row_draft_p, text="Thư mục:", font=("Segoe UI", 9), fg=self.fg_main, bg=self.bg_card).pack(side=tk.LEFT, padx=(0, 6))
         entry_draft_p = tk.Entry(row_draft_p, textvariable=self.var_drafts_dir, font=("Segoe UI", 9), bg=self.bg_card_inner, fg=self.fg_main,
@@ -947,10 +965,10 @@ class CapCutBatchStudioApp(tk.Tk):
         
         # Treeview danh sách dự án
         tree_d_container = tk.Frame(card_drafts, bg=self.bg_card_inner, bd=1, relief=tk.SOLID)
-        tree_d_container.pack(fill=tk.BOTH, expand=True, pady=(0, 6))
+        tree_d_container.pack(fill=tk.BOTH, expand=True, pady=(0, 4))
         
         d_cols = ("name", "status")
-        self.tree_drafts = ttk.Treeview(tree_d_container, columns=d_cols, show="headings", style="Studio.Treeview", selectmode="extended")
+        self.tree_drafts = ttk.Treeview(tree_d_container, columns=d_cols, show="headings", style="Studio.Treeview", selectmode="extended", height=6)
         self.tree_drafts.heading("name", text="Tên Dự Án CapCut (Draft Name)")
         self.tree_drafts.heading("status", text="Trạng Thái")
         self.tree_drafts.column("name", width=280, anchor=tk.W)
@@ -964,12 +982,12 @@ class CapCutBatchStudioApp(tk.Tk):
         # Nút đẩy dự án được chọn vào hàng đợi
         btn_add_project_to_queue = tk.Button(card_drafts, text="➕ ĐƯA DỰ ÁN ĐÃ CHỌN VÀO HÀNG ĐỢI (QUEUE)", font=("Segoe UI", 9, "bold"),
                                              bg=self.btn_bg, fg=self.accent_green, activebackground="#059669", activeforeground="#FFFFFF",
-                                             bd=1, relief=tk.SOLID, pady=4, cursor="hand2", command=self._add_selected_drafts_to_queue)
+                                             bd=1, relief=tk.SOLID, pady=3, cursor="hand2", command=self._add_selected_drafts_to_queue)
         btn_add_project_to_queue.pack(fill=tk.X)
         
         # Card 4: Output Log & Progress Bar
         card_log = tk.LabelFrame(right_frame, text="4. Tiến Trình & Nhật Ký (Live Output Log)", bg=self.bg_card, fg=self.accent_cyan,
-                                 font=("Segoe UI", 10, "bold"), padx=12, pady=8, bd=1, relief=tk.SOLID)
+                                 font=("Segoe UI", 10, "bold"), padx=10, pady=6, bd=1, relief=tk.SOLID)
         card_log.pack(fill=tk.BOTH, expand=True)
         
         # Thanh tiến trình & trạng thái
