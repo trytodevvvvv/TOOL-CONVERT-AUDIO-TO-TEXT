@@ -1154,12 +1154,23 @@ class CapCutBatchStudioApp(tk.Tk):
         self.var_font_size = tk.DoubleVar(value=self.config.get("font_size", 6.0))
         self.var_group_sub = tk.BooleanVar(value=self.config.get("group_subtitles", True))
         self.gpu_power_map = {
-            "Tối ưu GPU (Batch 18 - ~12.5GB Peak)": 18,
-            "Siêu tốc (Batch 22 - ~14.0GB Peak)": 22,
-            "An toàn (Batch 14 - ~10GB Peak)": 14,
-            "Nhẹ nhàng (Batch 10 - ~7.5GB Peak)": 10
+            "⚡ Tối ưu (Batch 18 - ~12.5GB Peak)": 18,
+            "🚀 Siêu tốc (Batch 22 - ~14.0GB Peak)": 22,
+            "🛡️ An toàn (Batch 14 - ~10.0GB Peak)": 14,
+            "🍃 Nhẹ nhàng (Batch 10 - ~7.5GB Peak)": 10
         }
-        self.var_gpu_power = tk.StringVar(value=self.config.get("gpu_power", "Tối ưu GPU (Batch 18 - ~12.5GB Peak)"))
+        saved_power = self.config.get("gpu_power", "")
+        default_power = "⚡ Tối ưu (Batch 18 - ~12.5GB Peak)"
+        if saved_power not in self.gpu_power_map:
+            if "22" in str(saved_power):
+                saved_power = "🚀 Siêu tốc (Batch 22 - ~14.0GB Peak)"
+            elif "14" in str(saved_power):
+                saved_power = "🛡️ An toàn (Batch 14 - ~10.0GB Peak)"
+            elif "10" in str(saved_power):
+                saved_power = "🍃 Nhẹ nhàng (Batch 10 - ~7.5GB Peak)"
+            else:
+                saved_power = default_power
+        self.var_gpu_power = tk.StringVar(value=saved_power)
         self.var_output_dir = tk.StringVar(value=self.config.get("output_dir", ""))
         
         # Danh sách hàng đợi dự án CapCut
@@ -1249,6 +1260,7 @@ class CapCutBatchStudioApp(tk.Tk):
         self.option_add("*TCombobox*Listbox.selectBackground", self.accent_blue)
         self.option_add("*TCombobox*Listbox.selectForeground", "#FFFFFF")
         self.option_add("*TCombobox*Listbox.font", ("Segoe UI", 9))
+        self.option_add("*TCombobox*Listbox.width", 36)
 
     def _bind_hover(self, btn, normal_bg, hover_bg):
         btn.bind("<Enter>", lambda e: btn.configure(bg=hover_bg) if str(btn["state"]) != "disabled" else None)
@@ -1354,44 +1366,47 @@ class CapCutBatchStudioApp(tk.Tk):
         
         # Card 2: Cấu hình phụ đề & Master Action
         card_sub_opts = tk.LabelFrame(left_frame, text="2. Cấu hình Phụ Đề & Hành Động", bg=self.bg_card, fg=self.accent_cyan,
-                                      font=("Segoe UI", 10, "bold"), padx=10, pady=6, bd=1, relief=tk.SOLID)
+                                      font=("Segoe UI", 10, "bold"), padx=12, pady=8, bd=1, relief=tk.SOLID)
         card_sub_opts.pack(fill=tk.X)
         
-        row_cfg = tk.Frame(card_sub_opts, bg=self.bg_card)
-        row_cfg.pack(fill=tk.X, pady=(0, 4))
+        # Hàng 1: AI Engine & Sức mạnh GPU (Grid chia 50% - 50%, co giãn tự nhiên)
+        grid_ai_gpu = tk.Frame(card_sub_opts, bg=self.bg_card)
+        grid_ai_gpu.pack(fill=tk.X, pady=(0, 6))
+        grid_ai_gpu.columnconfigure(1, weight=1)
+        grid_ai_gpu.columnconfigure(3, weight=1)
         
-        tk.Label(row_cfg, text="Ngôn ngữ voice:", font=("Segoe UI", 9), fg=self.fg_main, bg=self.bg_card).grid(row=0, column=0, sticky=tk.W, pady=2)
-        cb_lang = ttk.Combobox(row_cfg, textvariable=self.var_language, values=list(self.lang_map.keys()), state="readonly", width=22, font=("Segoe UI", 9))
-        cb_lang.grid(row=0, column=1, sticky=tk.W, padx=6, pady=2)
+        tk.Label(grid_ai_gpu, text="Ngôn ngữ voice:", font=("Segoe UI", 9, "bold"), fg=self.fg_main, bg=self.bg_card).grid(row=0, column=0, sticky=tk.W, pady=2)
+        cb_lang = ttk.Combobox(grid_ai_gpu, textvariable=self.var_language, values=list(self.lang_map.keys()), state="readonly", font=("Segoe UI", 9))
+        cb_lang.grid(row=0, column=1, sticky="ew", padx=(6, 14), pady=2)
         
-        tk.Label(row_cfg, text="Giới hạn từ:", font=("Segoe UI", 9), fg=self.fg_main, bg=self.bg_card).grid(row=0, column=2, sticky=tk.W, padx=(8, 0), pady=2)
-        sb_words = tk.Spinbox(row_cfg, from_=1, to=100, textvariable=self.var_max_words, width=5, bg=self.bg_card_inner, fg=self.fg_main, bd=1, relief=tk.SOLID, font=("Segoe UI", 9))
-        sb_words.grid(row=0, column=3, sticky=tk.W, padx=4, pady=2)
+        tk.Label(grid_ai_gpu, text="Sức mạnh GPU:", font=("Segoe UI", 9, "bold"), fg=self.accent_cyan, bg=self.bg_card).grid(row=0, column=2, sticky=tk.W, pady=2)
+        cb_gpu_power = ttk.Combobox(grid_ai_gpu, textvariable=self.var_gpu_power, values=list(self.gpu_power_map.keys()), state="readonly", font=("Segoe UI", 9))
+        cb_gpu_power.grid(row=0, column=3, sticky="ew", padx=(6, 0), pady=2)
         
-        tk.Label(row_cfg, text="Cỡ chữ:", font=("Segoe UI", 9), fg=self.fg_main, bg=self.bg_card).grid(row=0, column=4, sticky=tk.W, padx=(8, 0), pady=2)
-        sb_font_size = tk.Spinbox(row_cfg, from_=1.0, to=30.0, increment=0.5, textvariable=self.var_font_size, width=5, bg=self.bg_card_inner, fg=self.fg_main, bd=1, relief=tk.SOLID, font=("Segoe UI", 9))
-        sb_font_size.grid(row=0, column=5, sticky=tk.W, padx=4, pady=2)
+        # Hàng 2: Thông số phụ đề CapCut (Cỡ chữ, Giới hạn từ, Kiểu Sub)
+        row_sub_opts = tk.Frame(card_sub_opts, bg=self.bg_card)
+        row_sub_opts.pack(fill=tk.X, pady=(0, 6))
         
-        # Chế độ phụ đề CapCut
-        row_mode = tk.Frame(card_sub_opts, bg=self.bg_card)
-        row_mode.pack(fill=tk.X, pady=(2, 5))
+        tk.Label(row_sub_opts, text="Cỡ chữ:", font=("Segoe UI", 9, "bold"), fg=self.fg_main, bg=self.bg_card).pack(side=tk.LEFT, padx=(0, 4))
+        sb_font_size = tk.Spinbox(row_sub_opts, from_=1.0, to=30.0, increment=0.5, textvariable=self.var_font_size, width=5, bg=self.bg_card_inner, fg=self.fg_main, bd=1, relief=tk.SOLID, font=("Segoe UI", 9))
+        sb_font_size.pack(side=tk.LEFT, padx=(0, 14))
         
-        tk.Label(row_mode, text="Kiểu phụ đề CapCut:", font=("Segoe UI", 9, "bold"), fg=self.fg_main, bg=self.bg_card).pack(side=tk.LEFT, padx=(0, 10))
-        r_group = tk.Radiobutton(row_mode, text="Nhóm Sub (Áp dụng cho tất cả)", variable=self.var_group_sub, value=True,
+        tk.Label(row_sub_opts, text="Giới hạn từ:", font=("Segoe UI", 9, "bold"), fg=self.fg_main, bg=self.bg_card).pack(side=tk.LEFT, padx=(0, 4))
+        sb_words = tk.Spinbox(row_sub_opts, from_=1, to=100, textvariable=self.var_max_words, width=5, bg=self.bg_card_inner, fg=self.fg_main, bd=1, relief=tk.SOLID, font=("Segoe UI", 9))
+        sb_words.pack(side=tk.LEFT, padx=(0, 16))
+        
+        tk.Label(row_sub_opts, text="Kiểu phụ đề:", font=("Segoe UI", 9, "bold"), fg=self.fg_main, bg=self.bg_card).pack(side=tk.LEFT, padx=(0, 8))
+        r_group = tk.Radiobutton(row_sub_opts, text="Nhóm Sub (Đồng bộ)", variable=self.var_group_sub, value=True,
                                  bg=self.bg_card, fg=self.accent_green, activebackground=self.bg_card, selectcolor=self.bg_card_inner, font=("Segoe UI", 9))
-        r_group.pack(side=tk.LEFT, padx=(0, 12))
+        r_group.pack(side=tk.LEFT, padx=(0, 10))
         
-        r_nogroup = tk.Radiobutton(row_mode, text="Văn bản độc lập", variable=self.var_group_sub, value=False,
+        r_nogroup = tk.Radiobutton(row_sub_opts, text="Văn bản rời", variable=self.var_group_sub, value=False,
                                    bg=self.bg_card, fg=self.accent_orange, activebackground=self.bg_card, selectcolor=self.bg_card_inner, font=("Segoe UI", 9))
         r_nogroup.pack(side=tk.LEFT)
         
-        tk.Label(row_mode, text="Sức mạnh GPU:", font=("Segoe UI", 9, "bold"), fg=self.accent_cyan, bg=self.bg_card).pack(side=tk.LEFT, padx=(18, 6))
-        cb_gpu_power = ttk.Combobox(row_mode, textvariable=self.var_gpu_power, values=list(self.gpu_power_map.keys()), state="readonly", width=32, font=("Segoe UI", 9))
-        cb_gpu_power.pack(side=tk.LEFT)
-        
-        # Nút Master hành động chạy hàng đợi
+        # Hàng 3: Nút Master hành động chạy hàng đợi
         row_action = tk.Frame(card_sub_opts, bg=self.bg_card)
-        row_action.pack(fill=tk.X, pady=(4, 2))
+        row_action.pack(fill=tk.X, pady=(2, 2))
         
         self.btn_run_batch = tk.Button(row_action, text="⚡ BẮT ĐẦU CHẠY HÀNG CHỜ (BATCH PROCESS)", font=("Segoe UI", 11, "bold"),
                                        bg=self.accent_cyan, fg="#0F172A", activebackground="#7dd3fc", activeforeground="#0F172A",
@@ -1811,7 +1826,7 @@ class CapCutBatchStudioApp(tk.Tk):
             "max_words": 13,
             "font_size": 6.0,
             "group_subtitles": True,
-            "gpu_power": "Tối ưu GPU (Batch 18 - ~12.5GB Peak)",
+            "gpu_power": "⚡ Tối ưu (Batch 18 - ~12.5GB Peak)",
             "auto_export_srt": True,
             "output_dir": ""
         }
