@@ -718,14 +718,21 @@ def find_drafts(drafts_root):
             if os.path.isdir(item_path):
                 content_p = os.path.join(item_path, "draft_content.json")
                 meta_p = os.path.join(item_path, "draft_meta_info.json")
-                p_name = item
-                if os.path.exists(meta_p):
-                    try:
-                        with open(meta_p, "r", encoding="utf-8") as f:
-                            p_name = json.load(f).get("draft_name", item)
-                    except Exception: pass
                 if os.path.exists(content_p):
-                    drafts.append({"name": p_name, "path": item_path, "status": "Sẵn sàng (Ready)"})
+                    mtime = os.path.getmtime(content_p)
+                    p_name = item
+                    if os.path.exists(meta_p):
+                        try:
+                            with open(meta_p, "r", encoding="utf-8") as f:
+                                meta_data = json.load(f)
+                                p_name = meta_data.get("draft_name", item)
+                                tm_mod = meta_data.get("tm_draft_modified", 0)
+                                if tm_mod and tm_mod > 0:
+                                    mtime = max(mtime, tm_mod / 1000000.0)
+                        except Exception: pass
+                    drafts.append({"name": p_name, "path": item_path, "status": "Sẵn sàng (Ready)", "mtime": mtime})
+        # Sắp xếp từ mới nhất xuống cũ nhất
+        drafts.sort(key=lambda d: d.get("mtime", 0), reverse=True)
     except Exception: pass
     return drafts
 
@@ -890,11 +897,7 @@ class CapCutBatchStudioApp(tk.Tk):
         self.btn_copy_code.pack(side=tk.RIGHT, padx=(4, 0))
         self._bind_hover(self.btn_copy_code, "#1E1B4B", "#312E81")
         
-        btn_open_colab = tk.Button(row_conn, text="⚡ Mở Colab", font=("Segoe UI", 9), bg=self.btn_bg, fg="#FBBF24",
-                                   activebackground="#475569", activeforeground="#FFFFFF", bd=0, padx=10, pady=3,
-                                   cursor="hand2", command=lambda: webbrowser.open("https://colab.research.google.com/"))
-        btn_open_colab.pack(side=tk.RIGHT)
-        self._bind_hover(btn_open_colab, self.btn_bg, "#475569")
+
 
         # 2. KHU VỰC LÀM VIỆC CHÍNH (BỐ CỤC 2 CỘT GRID VỮNG CHẮC)
         work_container = tk.Frame(self, bg=self.bg_main)
