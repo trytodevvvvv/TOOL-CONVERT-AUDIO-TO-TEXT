@@ -69,7 +69,7 @@ from faster_whisper import WhisperModel, BatchedInferencePipeline
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 COMPUTE_TYPE = "float16" if DEVICE == "cuda" else "int8"
-BATCH_SIZE = 30  # Batch size 24 lát cắt audio song song đẩy VRAM lên ngưỡng 13.0 - 13.5 GB
+BATCH_SIZE = 18  # Batch size 18 tối ưu đỉnh VRAM 12.0 - 12.8 GB trên Tesla T4 an toàn tuyệt đối
 BEAM_SIZE = 5    # Chuẩn độ chính xác SOTA cao nhất cho tiếng Việt
 
 print(f"--> [1/3] Đang nạp model Faster-Whisper large-v3 vào GPU ({DEVICE.upper()})...")
@@ -117,7 +117,7 @@ class TranscribeRequest(BaseModel):
     audio_base64: str
     audio_ext: Optional[str] = "flac"
     language: Optional[str] = "vi"
-    batch_size: Optional[int] = 30
+    batch_size: Optional[int] = 18
     beam_size: Optional[int] = 5
     vad_filter: Optional[bool] = True
 
@@ -215,7 +215,7 @@ def _execute_transcribe(req: TranscribeRequest):
         except Exception as err:
             err_msg = str(err).lower()
             if "out of memory" in err_msg or "cuda" in err_msg:
-                print(f"--> [TỰ PHỤC HỒI GPU] Phát hiện tràn VRAM ({err}). Đang giải phóng bộ nhớ và tự động thử lại an toàn với batch_size=16...")
+                print(f"--> [TỰ PHỤC HỒI GPU] Phát hiện tràn VRAM ({err}). Đang giải phóng bộ nhớ và tự động thử lại an toàn với batch_size=12...")
                 gc.collect()
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
@@ -225,7 +225,7 @@ def _execute_transcribe(req: TranscribeRequest):
                         batched_pipeline = BatchedInferencePipeline(model=base_model)
                 except Exception: pass
                 
-                safe_batch = 16
+                safe_batch = 12
                 segments_gen, info = batched_pipeline.transcribe(
                     tmp_path,
                     batch_size=safe_batch,

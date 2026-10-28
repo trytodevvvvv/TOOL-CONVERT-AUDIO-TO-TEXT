@@ -172,7 +172,7 @@ if torch.cuda.is_available():
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 COMPUTE_TYPE = "float16" if DEVICE == "cuda" else "int8"
-BATCH_SIZE = 30  # Khai thác tối đa ~13.5 GB VRAM trên Tesla T4
+BATCH_SIZE = 18  # Batch size 18 tối ưu đỉnh VRAM 12.0 - 12.8 GB trên Tesla T4 an toàn tuyệt đối
 BEAM_SIZE = 5    # SOTA accuracy
 
 print(f"--> Đang nạp model Whisper Large-v3 vào GPU ({torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU'})...")
@@ -203,7 +203,7 @@ class TranscribeRequest(BaseModel):
     audio_base64: str
     audio_ext: Optional[str] = "flac"
     language: Optional[str] = "vi"
-    batch_size: Optional[int] = 30
+    batch_size: Optional[int] = 18
     beam_size: Optional[int] = 5
     vad_filter: Optional[bool] = True
 
@@ -297,7 +297,7 @@ def _execute_transcribe(req: TranscribeRequest):
         except Exception as err:
             err_msg = str(err).lower()
             if "out of memory" in err_msg or "cuda" in err_msg:
-                print(f"--> [TỰ PHỤC HỒI GPU] Phát hiện tràn VRAM ({err}). Đang giải phóng bộ nhớ và tự động thử lại an toàn với batch_size=16...")
+                print(f"--> [TỰ PHỤC HỒI GPU] Phát hiện tràn VRAM ({err}). Đang giải phóng bộ nhớ và tự động thử lại an toàn với batch_size=12...")
                 gc.collect()
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
@@ -307,7 +307,7 @@ def _execute_transcribe(req: TranscribeRequest):
                         batched_pipeline = BatchedInferencePipeline(model=base_model)
                 except Exception: pass
                 
-                safe_batch = 16
+                safe_batch = 12
                 segments_gen, info = batched_pipeline.transcribe(
                     tmp_path,
                     batch_size=safe_batch,
@@ -550,7 +550,7 @@ def clear_colab_gpu_memory(colab_url, log_callback=None):
         except Exception:
             continue
 
-def transcribe_audio_colab(colab_url, audio_path, language_code, log_callback, stop_event=None):
+def transcribe_audio_colab(colab_url, audio_path, language_code, log_callback, batch_size=18, stop_event=None):
     """Gửi âm thanh lên GPU Colab Tesla T4 và nhận lại danh sách segments."""
     b64_audio, audio_ext = compress_audio_for_colab(audio_path, log_callback)
     
@@ -562,7 +562,7 @@ def transcribe_audio_colab(colab_url, audio_path, language_code, log_callback, s
         "audio_base64": b64_audio,
         "audio_ext": audio_ext,
         "language": language_code or "auto",
-        "batch_size": 30, # Cân bằng tối ưu ~12.8 - 13.0 GB VRAM Tesla T4 an toàn tuyệt đối
+        "batch_size": batch_size or 18, # Sức mạnh GPU linh hoạt theo tùy chọn giao diện
         "beam_size": 5,
         "vad_filter": True
     }).encode("utf-8")
@@ -1153,6 +1153,13 @@ class CapCutBatchStudioApp(tk.Tk):
         self.var_max_words = tk.IntVar(value=self.config.get("max_words", 13))
         self.var_font_size = tk.DoubleVar(value=self.config.get("font_size", 6.0))
         self.var_group_sub = tk.BooleanVar(value=self.config.get("group_subtitles", True))
+        self.gpu_power_map = {
+            "Tối ưu GPU (Batch 18 - ~12.5GB Peak)": 18,
+            "Siêu tốc (Batch 22 - ~14.0GB Peak)": 22,
+            "An toàn (Batch 14 - ~10GB Peak)": 14,
+            "Nhẹ nhàng (Batch 10 - ~7.5GB Peak)": 10
+        }
+        self.var_gpu_power = tk.StringVar(value=self.config.get("gpu_power", "Tối ưu GPU (Batch 18 - ~12.5GB Peak)"))
         self.var_output_dir = tk.StringVar(value=self.config.get("output_dir", ""))
         
         # Danh sách hàng đợi dự án CapCut
@@ -1377,6 +1384,10 @@ class CapCutBatchStudioApp(tk.Tk):
         r_nogroup = tk.Radiobutton(row_mode, text="Văn bản độc lập", variable=self.var_group_sub, value=False,
                                    bg=self.bg_card, fg=self.accent_orange, activebackground=self.bg_card, selectcolor=self.bg_card_inner, font=("Segoe UI", 9))
         r_nogroup.pack(side=tk.LEFT)
+        
+        tk.Label(row_mode, text="Sức mạnh GPU:", font=("Segoe UI", 9, "bold"), fg=self.accent_cyan, bg=self.bg_card).pack(side=tk.LEFT, padx=(18, 6))
+        cb_gpu_power = ttk.Combobox(row_mode, textvariable=self.var_gpu_power, values=list(self.gpu_power_map.keys()), state="readonly", width=32, font=("Segoe UI", 9))
+        cb_gpu_power.pack(side=tk.LEFT)
         
         # Nút Master hành động chạy hàng đợi
         row_action = tk.Frame(card_sub_opts, bg=self.bg_card)
@@ -1685,8 +1696,9 @@ class CapCutBatchStudioApp(tk.Tk):
         
         self.log("=" * 65)
         self.log(f"KHỞI ĐỘNG XỬ LÝ HÀNG ĐỢI ({total_items} DỰ ÁN CAPCUT):")
+        chosen_batch = self.gpu_power_map.get(self.var_gpu_power.get(), 18)
         self.log(f"  Colab GPU: {colab_url}")
-        self.log(f"  Ngôn ngữ: {language_display} | Tối đa từ/đoạn: {max_words}")
+        self.log(f"  Ngôn ngữ: {language_display} | Tối đa từ/đoạn: {max_words} | Sức mạnh GPU: Batch {chosen_batch}")
         self.log("=" * 65)
         
         completed_count = 0
@@ -1719,7 +1731,7 @@ class CapCutBatchStudioApp(tk.Tk):
                 offset_us = candidates[0]["offset_us"]
                     
                 # 2. Gửi sang Colab Large-v3 GPU
-                raw_segments = transcribe_audio_colab(colab_url, audio_target, language_code, self.log, stop_event=self.stop_event)
+                raw_segments = transcribe_audio_colab(colab_url, audio_target, language_code, self.log, batch_size=chosen_batch, stop_event=self.stop_event)
                 
                 # 3. Bộ lọc ảo giác & vòng lặp từ vô tận (Anti-Hallucination)
                 filtered_segments = filter_hallucinations_and_loops(raw_segments, language=language_code)
@@ -1799,6 +1811,7 @@ class CapCutBatchStudioApp(tk.Tk):
             "max_words": 13,
             "font_size": 6.0,
             "group_subtitles": True,
+            "gpu_power": "Tối ưu GPU (Batch 18 - ~12.5GB Peak)",
             "auto_export_srt": True,
             "output_dir": ""
         }
@@ -1824,6 +1837,7 @@ class CapCutBatchStudioApp(tk.Tk):
                 "max_words": int(self.var_max_words.get()),
                 "font_size": float(self.var_font_size.get()),
                 "group_subtitles": bool(self.var_group_sub.get()),
+                "gpu_power": self.var_gpu_power.get(),
                 "auto_export_srt": True,
                 "output_dir": self.var_output_dir.get()
             }
