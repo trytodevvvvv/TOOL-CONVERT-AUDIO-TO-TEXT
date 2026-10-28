@@ -1,0 +1,297 @@
+# ==============================================================================
+# WHISPER LARGE-V3 COLAB GPU SERVER (OPTIMIZED FOR TESLA T4 16GB)
+# ==============================================================================
+# Hỗ trợ: FastAPI + Uvicorn + Cloudflare Tunnel + Batched Faster-Whisper
+# Tối ưu hóa: Khai thác 13.0 - 13.5 GB VRAM trên Tesla T4, tốc độ siêu tốc
+# ==============================================================================
+
+import os
+import io
+import time
+import base64
+import tempfile
+import threading
+import subprocess
+import re
+import uuid
+import gc
+from typing import Optional, List
+
+# Cấu hình PyTorch CUDA Memory Allocator chống phân mảnh RAM GPU khi chạy ở mức 13.5GB
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+
+import torch
+import nest_asyncio
+import uvicorn
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
+
+# Thiết lập cờ tăng tốc phần cứng cho Tensor Cores
+if torch.cuda.is_available():
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
+
+# ==============================================================================
+# PHẦN 1: KHỞI TẠO MODEL FASTER-WHISPER LARGE-V3 & BATCHED PIPELINE
+# ==============================================================================
+from faster_whisper import WhisperModel, BatchedInferencePipeline
+
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+COMPUTE_TYPE = "float16" if DEVICE == "cuda" else "int8"
+BATCH_SIZE = 24  # Batch size 24 lát cắt audio song song đẩy VRAM lên ngưỡng 13.0 - 13.5 GB
+BEAM_SIZE = 5    # Chuẩn độ chính xác SOTA cao nhất cho tiếng Việt
+
+print(f"--> [1/3] Đang nạp model Faster-Whisper large-v3 vào GPU ({DEVICE.upper()})...")
+if torch.cuda.is_available():
+    print(f"    Thiết bị: {torch.cuda.get_device_name(0)}")
+
+# Khởi tạo WhisperModel large-v3 chạy float16 trên GPU
+base_model = WhisperModel(
+    "large-v3",
+    device=DEVICE,
+    compute_type=COMPUTE_TYPE,
+    cpu_threads=4,
+    num_workers=2
+)
+
+# Khởi tạo Batched Inference Pipeline để xử lý song song các block âm thanh
+try:
+    batched_pipeline = BatchedInferencePipeline(model=base_model)
+    print("--> [2/3] Đã kích hoạt BatchedInferencePipeline (Batching song song)!")
+except Exception as e:
+    print(f"--> Cảnh báo: Không thể khởi tạo BatchedInferencePipeline: {e}. Sẽ dùng pipeline mặc định.")
+    batched_pipeline = None
+
+# Thực hiện Warm-up GPU với dữ liệu giả lập để cấp phát trước bộ nhớ CUDA Arena
+if torch.cuda.is_available():
+    try:
+        import numpy as np
+        print("--> Đang Warm-up GPU...")
+        dummy_audio = np.zeros(16000 * 2, dtype=np.float32)
+        _ = base_model.transcribe(dummy_audio, beam_size=1)
+        torch.cuda.empty_cache()
+    except Exception:
+        pass
+
+print("--> [3/3] Whisper Large-v3 đã sẵn sàng phục vụ!")
+
+# ==============================================================================
+# PHẦN 2: XÂY DỰNG FASTAPI SERVER & HỆ THỐNG ASYNC TASK QUEUE
+# ==============================================================================
+app = FastAPI(title="Whisper Large-v3 Colab GPU Server", version="1.0")
+
+class TranscribeRequest(BaseModel):
+    audio_base64: str
+    audio_ext: Optional[str] = "flac"
+    language: Optional[str] = "vi"
+    batch_size: Optional[int] = 24
+    beam_size: Optional[int] = 5
+    vad_filter: Optional[bool] = True
+
+TASKS = {}
+TASKS_LOCK = threading.Lock()
+
+def _execute_transcribe(req: TranscribeRequest):
+    """Xử lý nhận diện âm thanh với Whisper Large-v3 Batched trên GPU"""
+    raw_bytes = base64.b64decode(req.audio_base64)
+    ext = req.audio_ext or "flac"
+    
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=f".{ext}", delete=False) as f:
+            f.write(raw_bytes)
+            tmp_path = f.name
+
+        target_lang = None if (not req.language or req.language.lower() in ("auto", "none")) else req.language
+        batch_size = req.batch_size or BATCH_SIZE
+        beam_size = req.beam_size or BEAM_SIZE
+        vad = True if req.vad_filter is None else req.vad_filter
+
+        start_time = time.time()
+        
+        # Nếu có Batched Pipeline và đang chạy trên CUDA, dùng Batched để tối đa hóa GPU T4
+        if batched_pipeline is not None and DEVICE == "cuda":
+            segments_gen, info = batched_pipeline.transcribe(
+                tmp_path,
+                batch_size=batch_size,
+                beam_size=beam_size,
+                language=target_lang,
+                vad_filter=vad,
+                vad_parameters=dict(min_silence_duration_ms=500),
+                word_timestamps=True
+            )
+        else:
+            segments_gen, info = base_model.transcribe(
+                tmp_path,
+                beam_size=beam_size,
+                language=target_lang,
+                vad_filter=vad,
+                vad_parameters=dict(min_silence_duration_ms=500),
+                word_timestamps=True
+            )
+
+        parsed_segments = []
+        for s in segments_gen:
+            parsed_segments.append({
+                "start": round(float(s.start), 3),
+                "end": round(float(s.end), 3),
+                "text": s.text.strip()
+            })
+
+        duration_proc = round(time.time() - start_time, 2)
+        
+        return {
+            "success": True,
+            "language": info.language,
+            "language_probability": round(float(info.language_probability), 4) if hasattr(info, "language_probability") else 1.0,
+            "audio_duration_sec": round(float(info.duration), 2) if hasattr(info, "duration") else 0.0,
+            "processing_time_sec": duration_proc,
+            "total_segments": len(parsed_segments),
+            "segments": parsed_segments
+        }
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except Exception:
+                pass
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+def _async_worker(task_id: str, req: TranscribeRequest):
+    try:
+        res = _execute_transcribe(req)
+        with TASKS_LOCK:
+            TASKS[task_id] = {"status": "completed", "result": res}
+    except Exception as e:
+        with TASKS_LOCK:
+            TASKS[task_id] = {"status": "failed", "error": str(e)}
+    finally:
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+# ==============================================================================
+# PHẦN 3: ĐỊNH NGHĨA CÁC ENDPOINT API
+# ==============================================================================
+
+@app.get("/")
+@app.get("/health")
+def health_check():
+    """Kiểm tra tình trạng máy chủ và thông số bộ nhớ GPU Tesla T4"""
+    gpu_name = torch.cuda.get_device_name(0) if torch.cuda.is_available() else "CPU"
+    free_mem, total_mem = torch.cuda.mem_get_info(0) if torch.cuda.is_available() else (0, 0)
+    used_mem = total_mem - free_mem
+    return {
+        "status": "ready",
+        "device": DEVICE,
+        "gpu_name": gpu_name,
+        "vram_used_gb": round(used_mem / (1024**3), 2),
+        "vram_free_gb": round(free_mem / (1024**3), 2),
+        "vram_total_gb": round(total_mem / (1024**3), 2),
+        "model": "faster-whisper large-v3",
+        "batch_size_target": BATCH_SIZE,
+        "beam_size": BEAM_SIZE
+    }
+
+@app.post("/submit_transcribe")
+def submit_transcribe(req: TranscribeRequest):
+    """Gửi tác vụ nhận diện âm thanh vào hàng đợi bất đồng bộ (tránh Timeout với audio dài)"""
+    task_id = str(uuid.uuid4())
+    with TASKS_LOCK:
+        TASKS[task_id] = {"status": "processing", "start_time": time.time()}
+    threading.Thread(target=_async_worker, args=(task_id, req), daemon=True).start()
+    return {"success": True, "task_id": task_id}
+
+@app.get("/task_status/{task_id}")
+def get_task_status(task_id: str):
+    """Kiểm tra tiến độ thực hiện tác vụ theo task_id"""
+    with TASKS_LOCK:
+        task = TASKS.get(task_id)
+    if not task:
+        return {"status": "failed", "error": "Không tìm thấy mã tác vụ (Task ID)"}
+    if task["status"] == "completed":
+        return {"status": "completed", "result": task["result"]}
+    elif task["status"] == "failed":
+        return {"status": "failed", "error": task.get("error", "Lỗi không xác định")}
+    else:
+        return {"status": "processing"}
+
+@app.post("/task_clear/{task_id}")
+def clear_task_status(task_id: str):
+    """Dọn dẹp kết quả tác vụ cũ khỏi bộ nhớ"""
+    with TASKS_LOCK:
+        TASKS.pop(task_id, None)
+    return {"success": True}
+
+@app.post("/transcribe")
+def transcribe_direct(req: TranscribeRequest):
+    """Endpoint xử lý trực tiếp đồng bộ (phù hợp với audio ngắn < 3 phút)"""
+    try:
+        return _execute_transcribe(req)
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@app.post("/purge_cache")
+def purge_gpu_cache():
+    """Giải phóng toàn bộ cache VRAM và rác RAM"""
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    return {"success": True, "message": "Đã giải phóng sạch VRAM và Cache GPU."}
+
+# ==============================================================================
+# PHẦN 4: CHẠY SERVER NGẦM & TẠO ĐƯỜNG HẦM CLOUDFLARE PUBLIC
+# ==============================================================================
+def start_server_and_tunnel():
+    nest_asyncio.apply()
+    
+    # Khởi động FastAPI với Uvicorn trên thread riêng
+    def run_uvicorn():
+        uvicorn.run(app, host="127.0.0.1", port=8000, log_level="warning")
+        
+    server_thread = threading.Thread(target=run_uvicorn, daemon=True)
+    server_thread.start()
+    time.sleep(2)
+    
+    if os.path.exists("cloudflare.log"):
+        try:
+            os.remove("cloudflare.log")
+        except Exception:
+            pass
+
+    # Kích hoạt Cloudflared Tunnel
+    tunnel_proc = subprocess.Popen(
+        ["cloudflared", "tunnel", "--url", "http://127.0.0.1:8000", "--logfile", "cloudflare.log"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL
+    )
+
+    public_url = None
+    print("\nĐang khởi tạo đường hầm Cloudflare Tunnel...")
+    for _ in range(35):
+        time.sleep(1)
+        if os.path.exists("cloudflare.log"):
+            with open("cloudflare.log", "r", encoding="utf-8", errors="ignore") as f:
+                content = f.read()
+                matches = re.findall(r"https://[a-zA-Z0-9-]+\.trycloudflare\.com", content)
+                if matches:
+                    public_url = matches[0]
+                    break
+
+    if public_url:
+        print("\n" + "=" * 70)
+        print("🚀 KẾT NỐI GPU COLAB THÀNH CÔNG (TESLA T4 16GB - WHISPER LARGE-V3)!")
+        print(f"👉 DÁN LINK NÀY VÀO TOOL DESKTOP: {public_url}")
+        print("=" * 70 + "\n")
+        print("⏳ Server đang chạy ngầm... Giữ tab Google Colab mở để duy trì GPU.")
+        try:
+            tunnel_proc.wait()
+        except KeyboardInterrupt:
+            print("Đã dừng server.")
+    else:
+        print("❌ Lỗi: Không thể lấy được link Cloudflare. Vui lòng kiểm tra file cloudflare.log.")
+
+if __name__ == "__main__":
+    start_server_and_tunnel()

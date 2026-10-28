@@ -47,3 +47,4 @@
 - [ ] Không làm phá vỡ cấu trúc JSON của CapCut (`materials`, `tracks`, `segments`).
 - [ ] Giao diện Tkinter chạy mượt mà, không bị freeze (các tác vụ nặng phải nằm trong thread riêng).
 - [ ] Báo cáo lại cho người dùng và chờ lệnh: nếu người dùng nói "đẩy code lên github" thì mới push.
+

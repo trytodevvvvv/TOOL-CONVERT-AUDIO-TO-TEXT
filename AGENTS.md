@@ -22,3 +22,4 @@
 - Đảm bảo hiệu năng bộ nhớ RAM/VRAM khi nạp Whisper (`gc.collect()`, `torch.cuda.empty_cache()`).
 - Giữ gìn đồng bộ giữa mã nguồn phát triển và thư mục đóng gói `CapCut_STT_Tool/`.
 - Không theo dõi file nhị phân lớn (`ffmpeg.exe`, model `*.pt`, rar).
+

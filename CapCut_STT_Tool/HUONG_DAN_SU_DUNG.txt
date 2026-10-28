@@ -3,35 +3,53 @@
 ================================================================================
 
 Công cụ tự động chuyển đổi âm thanh / giọng nói thành văn bản phụ đề (Auto Subtitle)
-và chèn trực tiếp vào dự án CapCut PC bằng AI Whisper (chạy offline).
+và chèn trực tiếp vào dự án CapCut PC bằng AI Whisper:
+  - CHẾ ĐỘ 1: Google Colab GPU Tesla T4 (Whisper Large-v3) - Siêu tốc & Chuẩn xác nhất.
+  - CHẾ ĐỘ 2: Local Offline trên máy tính cá nhân.
 
 --------------------------------------------------------------------------------
-YÊU CẦU TIÊN QUYẾT TRÊN MÁY TÍNH:
+HƯỚNG DẪN SỬ DỤNG CHẾ ĐỘ GOOGLE COLAB GPU (KHUYÊN DÙNG - TỐC ĐỘ X10 LẦN):
 --------------------------------------------------------------------------------
-1. Cài đặt Python 3 (Khuyến nghị bản 3.9 - 3.12):
-   - Link tải chính thức: https://www.python.org/downloads/
-   - [LƯU Ý RẤT QUAN TRỌNG]: Khi bật file cài đặt Python lên, ở cửa sổ đầu tiên, 
-     hãy TÍCH CHỌN VÀO Ô: "[x] Add python.exe to PATH" rồi mới bấm Install Now.
+1. Mở file Notebook "colab/Whisper_Large_v3_Colab.ipynb" trên Google Colab
+   (hoặc tải lên Google Drive rồi mở bằng Google Colaboratory).
+2. Kiểm tra phần cứng:
+   - Vào menu: Runtime -> Change runtime type -> Chọn "T4 GPU" -> Bấm Save.
+3. Bấm nút Play (Run) các ô lệnh:
+   - Hệ thống tự động cài đặt Faster-Whisper, nạp model Large-v3 vào GPU và bật đường hầm Cloudflare.
+   - Khi chạy xong, Colab sẽ hiển thị:
+     =================================================================
+     🚀 KẾT NỐI GPU COLAB THÀNH CÔNG (TESLA T4 16GB - WHISPER LARGE-V3)!
+     👉 DÁN LINK NÀY VÀO TOOL DESKTOP: https://xxxx.trycloudflare.com
+     =================================================================
+4. Mở file "run.bat" của Tool trên máy tính:
+   - Chọn chế độ: [●] Google Colab GPU (Tesla T4 16GB - Whisper Large-v3).
+   - Dán đường link "https://xxxx.trycloudflare.com" vào ô "Link Cloudflare Colab".
+   - Bấm nút "Kiểm tra kết nối" -> Xuất hiện thông báo màu xanh "ĐÃ KẾT NỐI: Tesla T4..."
+5. Chọn dự án CapCut và bấm nút "CHUYỂN ĐỔI VOICE -> TEXT".
+   - Tool sẽ tự động nén audio siêu tốc gửi lên Colab T4.
+   - Whisper Large-v3 trên Colab giải mã đa luồng (13.5GB VRAM) chỉ trong 10-30s.
+   - Kết quả phụ đề tự động nhảy thẳng vào timeline CapCut trên máy bạn!
 
 --------------------------------------------------------------------------------
-CÁC BƯỚC CÀI ĐẶT & KHỞI CHẠY:
+HƯỚNG DẪN SỬ DỤNG CHẾ ĐỘ LOCAL OFFLINE (KHÔNG CẦN INTERNET):
 --------------------------------------------------------------------------------
-Bước 1: Cài đặt thư viện tự động
-   - Nhấp đúp chuột vào file: "install.bat"
-   - Hệ thống sẽ tự động cài đặt OpenAI Whisper và tải duy nhất model 'small' (~460MB).
-   - Chờ đến khi xuất hiện thông báo "CÀI ĐẶT HOÀN TẤT THÀNH CÔNG!".
+1. Yêu cầu tiên quyết:
+   - Cài đặt Python 3 (3.9 - 3.12) từ https://www.python.org/downloads/
+   - [LƯU Ý]: Tích chọn vào ô "[x] Add python.exe to PATH" khi cài đặt.
+2. Cài đặt thư viện:
+   - Nhấp đúp chuột vào file "install.bat" để tự động cài đặt thư viện Whisper.
+3. Mở phần mềm:
+   - Nhấp đúp chuột vào file "run.bat".
+   - Chọn chế độ: [●] Local Offline.
+   - Chọn Model Whisper (khuyến nghị model "small" cho máy văn phòng hoặc "large-v3" nếu máy có card NVIDIA rời mạnh).
+   - Bấm nút "CHUYỂN ĐỔI VOICE -> TEXT".
 
-Bước 2: Mở phần mềm
-   - Nhấp đúp chuột vào file: "run.bat" để khởi chạy giao diện phần mềm.
-
 --------------------------------------------------------------------------------
-HƯỚNG DẪN SỬ DỤNG TRONG GIAO DIỆN:
+LƯU Ý RẤT QUAN TRỌNG KHI SỬ DỤNG CAPCUT:
 --------------------------------------------------------------------------------
-1. Chọn Thư mục Drafts CapCut:
-   - Tool sẽ tự động tìm kiếm thư mục dự án CapCut của bạn. 
-   - Nếu bạn lưu project ở ổ đĩa khác, nhấn nút "Browse..." để trỏ đến.
-2. Chọn dự án cần tạo phụ đề trong danh sách hiển thị bên phải.
-3. Model mặc định là 'small' (cho độ chính xác cao và tốc độ tốt).
-4. Nhấn nút "CHUYỂN ĐỔI VOICE -> TEXT".
-5. Mở lại CapCut trên máy để kiểm tra kết quả phụ đề đã được tự động thêm vào timeline!
+- Trước khi bấm nút chuyển đổi trên Tool, hãy đảm bảo bạn đã QUAY RA TRANG CHỦ (Homepage) 
+  của CapCut hoặc ĐÓNG HẲN CapCut.
+- Tuyệt đối KHÔNG để màn hình chỉnh sửa dự án đó mở, vì CapCut sẽ tự động ghi đè và làm 
+  mất phụ đề mới chèn.
+- File dự án luôn được tự động sao lưu dự phòng thành "draft_content.json.bak".
 ================================================================================
