@@ -1,0 +1,2 @@
+# Thư viện bổ trợ tùy chọn cho xử lý âm thanh Desktop
+imageio-ffmpeg>=0.4.8

@@ -7,3 +7,10 @@ config.json
 CapCut_STT_Tool.rar
 *.exe
 ffmpeg.exe
+*.zip
+*.rar
+*.7z
+*.log
+scratch/
+build/
+dist/
