@@ -220,6 +220,7 @@ LANGUAGE_PROMPTS = {
 }
 
 def _execute_transcribe(req: TranscribeRequest):
+    global batched_pipeline, base_model
     raw_bytes = base64.b64decode(req.audio_base64)
     ext = req.audio_ext or "flac"
     tmp_path = None

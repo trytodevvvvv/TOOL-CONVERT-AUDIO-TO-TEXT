@@ -123,6 +123,7 @@ TASKS_LOCK = threading.Lock()
 
 def _execute_transcribe(req: TranscribeRequest):
     """Xử lý nhận diện âm thanh với Whisper Large-v3 Batched trên GPU"""
+    global batched_pipeline, base_model
     raw_bytes = base64.b64decode(req.audio_base64)
     ext = req.audio_ext or "flac"
     
