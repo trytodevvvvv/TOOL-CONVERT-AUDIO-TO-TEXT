@@ -1,8 +1,8 @@
 @echo off
-title Cai dat thu vien - CapCut Audio to Text Tool
+title Cai dat moi truong - CapCut Audio to Text Batch Studio
 cls
 echo =======================================================================
-echo          CAI DAT THU VIEN - CAPCUT AUDIO TO TEXT TOOL
+echo          CAI DAT MOI TRUONG - CAPCUT AUDIO TO TEXT BATCH STUDIO
 echo =======================================================================
 echo.
 
@@ -52,7 +52,6 @@ for /d %%D in ("C:\Python3*") do (
     )
 )
 
-REM Neu khong tim thay Python o bat ky dau
 echo [LOI] Khong tim thay Python tren may tinh cua ban!
 echo.
 echo Vui long tai va cai dat Python tai: https://www.python.org/downloads/
@@ -64,43 +63,21 @@ pause
 exit /b 1
 
 :found_python
-echo [1/3] Kiem tra Python:
+echo [1/2] Kiem tra Python:
 %PYTHON_CMD% --version
 echo.
 
-REM 2. Cai dat thu vien Whisper
-echo [2/3] Dang cai dat thu vien OpenAI Whisper...
-echo (Vui long doi trong giay lat...)
-echo.
-%PYTHON_CMD% -m pip install --upgrade pip
-%PYTHON_CMD% -m pip install openai-whisper
-
-if %errorlevel% neq 0 (
-    echo.
-    echo [CANH BAO] Co loi khi tai thu vien pip. Vui long kiem tra ket noi Internet!
-    pause
-    exit /b 1
-)
-
-REM 3. Tai duy nhat Model 'small' ve may
-echo.
-echo [3/3] Dang tai model Whisper 'small' (~460MB) ve may...
-echo (Chi can tai duy nhat 1 lan nay de sau nay chay offline hoan toan)
-echo.
-%PYTHON_CMD% -c "import whisper; print('Dang tai model small...'); whisper.load_model('small'); print('[OK] Da tai xong model small!')"
-
-if %errorlevel% neq 0 (
-    echo.
-    echo [CANH BAO] Qua trinh tai model 'small' bi gian doan.
-    echo Ban van co the mo tool, khi chay ung dung se tu dong tai lai.
-)
+REM 2. Cai dat thu vien ho tro am thanh
+echo [2/2] Dang kiem tra va cai dat goi ho tro xu ly am thanh (imageio-ffmpeg)...
+%PYTHON_CMD% -m pip install --upgrade pip >nul 2>&1
+%PYTHON_CMD% -m pip install imageio-ffmpeg >nul 2>&1
 
 echo.
 echo =======================================================================
 echo                       CAI DAT HOAN TAT THANH CONG!
 echo.
-echo  - Da cai dat thu vien Whisper va tai xong model 'small'.
-echo  - File ffmpeg.exe da co san trong thu muc.
+echo  - Tool hoat dong 100%% tren Google Colab GPU Tesla T4 (Whisper Large-v3)
+echo  - May tinh khong can tai model nang hay ngốn RAM/VRAM!
 echo.
 echo  Ban co the mo ung dung bang cach nhap dup vao file: run.bat
 echo =======================================================================

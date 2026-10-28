@@ -1,10 +1,9 @@
 @echo off
-title CapCut Audio to Text Tool
-echo Đang khởi chạy CapCut Audio to Text Tool...
+title CapCut Audio to Text Batch Studio
+echo Dang khoi chay CapCut Audio to Text Batch Studio...
 python capcut_audio_to_text.py
 if %errorlevel% neq 0 (
     echo.
-    echo [LỖI] Đã xảy ra sự cố khi chạy ứng dụng.
-    echo Hãy đảm bảo bạn đã cài đặt Python và chạy lệnh 'pip install openai-whisper' trước đó.
+    echo [LOI] Da xay ra su co khi chay ung dung.
     pause
 )
