@@ -730,7 +730,7 @@ class CapCutBatchStudioApp(tk.Tk):
         self.config = self._load_config()
         
         # Biến cấu hình
-        self.var_colab_url = tk.StringVar(value=self.config.get("colab_url", ""))
+        self.var_colab_url = tk.StringVar(value="")
         self.var_colab_status = tk.StringVar(value="• Chưa kết nối Colab")
         self.var_drafts_dir = tk.StringVar(value=self.config.get("drafts_dir", ""))
         self.var_language = tk.StringVar(value=self.config.get("language", "Tự động nhận diện"))
@@ -761,8 +761,7 @@ class CapCutBatchStudioApp(tk.Tk):
         
         if self.var_drafts_dir.get():
             self.after(300, self._refresh_drafts_list)
-        if self.var_colab_url.get():
-            self.after(800, self._test_colab_connection)
+
 
     def _center_window(self):
         """
@@ -1360,6 +1359,7 @@ class CapCutBatchStudioApp(tk.Tk):
                     saved = json.load(f)
                     default_config.update(saved)
             except Exception: pass
+        default_config["colab_url"] = "" # Luôn làm mới link Colab
         if not default_config.get("drafts_dir"):
             default_config["drafts_dir"] = get_default_drafts_dir()
         return default_config
@@ -1369,7 +1369,7 @@ class CapCutBatchStudioApp(tk.Tk):
         config_path = os.path.join(script_dir, "config.json")
         try:
             config_data = {
-                "colab_url": self.var_colab_url.get().strip(),
+                "colab_url": "", # Không lưu URL Colab để phiên sau luôn mới
                 "drafts_dir": self.var_drafts_dir.get(),
                 "language": self.var_language.get(),
                 "max_words": int(self.var_max_words.get()),
