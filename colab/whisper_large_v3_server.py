@@ -67,7 +67,7 @@ from faster_whisper import WhisperModel, BatchedInferencePipeline
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 COMPUTE_TYPE = "float16" if DEVICE == "cuda" else "int8"
-BATCH_SIZE = 24  # Batch size 24 lát cắt audio song song đẩy VRAM lên ngưỡng 13.0 - 13.5 GB
+BATCH_SIZE = 36  # Batch size 24 lát cắt audio song song đẩy VRAM lên ngưỡng 13.0 - 13.5 GB
 BEAM_SIZE = 5    # Chuẩn độ chính xác SOTA cao nhất cho tiếng Việt
 
 print(f"--> [1/3] Đang nạp model Faster-Whisper large-v3 vào GPU ({DEVICE.upper()})...")
@@ -114,7 +114,7 @@ class TranscribeRequest(BaseModel):
     audio_base64: str
     audio_ext: Optional[str] = "flac"
     language: Optional[str] = "vi"
-    batch_size: Optional[int] = 24
+    batch_size: Optional[int] = 36
     beam_size: Optional[int] = 5
     vad_filter: Optional[bool] = True
 
@@ -159,10 +159,10 @@ def _execute_transcribe(req: TranscribeRequest):
         vad = True if req.vad_filter is None else req.vad_filter
 
         vad_params = dict(
-            threshold=0.35,
-            min_speech_duration_ms=250,
-            min_silence_duration_ms=1000,
-            speech_pad_ms=500
+            threshold=0.25,
+            min_speech_duration_ms=200,
+            min_silence_duration_ms=1200,
+            speech_pad_ms=600
         )
 
         transcribe_kwargs = dict(
@@ -303,13 +303,21 @@ def transcribe_direct(req: TranscribeRequest):
     except Exception as e:
         return {"success": False, "error": str(e)}
 
+@app.post("/clear_memory")
 @app.post("/purge_cache")
 def purge_gpu_cache():
-    """Giải phóng toàn bộ cache VRAM và rác RAM"""
+    """Giải phóng cưỡng bức toàn bộ cache VRAM và rác RAM ngay sau mỗi file trong hàng đợi"""
     gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
-    return {"success": True, "message": "Đã giải phóng sạch VRAM và Cache GPU."}
+        torch.cuda.ipc_collect()
+    free_mem, total_mem = torch.cuda.mem_get_info(0) if torch.cuda.is_available() else (0, 0)
+    return {
+        "status": "cleared",
+        "success": True,
+        "vram_free_gb": round(free_mem / (1024**3), 2),
+        "vram_total_gb": round(total_mem / (1024**3), 2)
+    }
 
 # ==============================================================================
 # PHẦN 4: CHẠY SERVER NGẦM & TẠO ĐƯỜNG HẦM CLOUDFLARE PUBLIC

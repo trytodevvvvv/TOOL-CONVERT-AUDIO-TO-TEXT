@@ -3,6 +3,7 @@ import sys
 import json
 import uuid
 import shutil
+import subprocess
 import datetime
 import threading
 import time
@@ -169,7 +170,7 @@ if torch.cuda.is_available():
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 COMPUTE_TYPE = "float16" if DEVICE == "cuda" else "int8"
-BATCH_SIZE = 24  # Batching 24 block âm thanh song song đẩy VRAM lên 13.0 - 13.5 GB
+BATCH_SIZE = 36  # Khai thác tối đa ~13.5 GB VRAM trên Tesla T4
 BEAM_SIZE = 5    # SOTA accuracy
 
 print(f"--> Đang nạp model Whisper Large-v3 vào GPU ({torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU'})...")
@@ -200,7 +201,7 @@ class TranscribeRequest(BaseModel):
     audio_base64: str
     audio_ext: Optional[str] = "flac"
     language: Optional[str] = "vi"
-    batch_size: Optional[int] = 24
+    batch_size: Optional[int] = 36
     beam_size: Optional[int] = 5
     vad_filter: Optional[bool] = True
 
@@ -243,10 +244,10 @@ def _execute_transcribe(req: TranscribeRequest):
         vad = True if req.vad_filter is None else req.vad_filter
 
         vad_params = dict(
-            threshold=0.35,
+            threshold=0.25,
             min_speech_duration_ms=250,
-            min_silence_duration_ms=1000,
-            speech_pad_ms=500
+            min_silence_duration_ms=1200,
+            speech_pad_ms=600
         )
 
         transcribe_kwargs = dict(
@@ -360,7 +361,25 @@ def task_clear(task_id: str):
     with TASKS_LOCK:
         if task_id in TASKS:
             del TASKS[task_id]
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
     return {"status": "cleared"}
+
+@app.post("/clear_memory")
+@app.post("/purge_cache")
+def clear_memory():
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        torch.cuda.ipc_collect()
+    free_mem, total_mem = torch.cuda.mem_get_info(0) if torch.cuda.is_available() else (0, 0)
+    return {
+        "status": "cleared",
+        "success": True,
+        "vram_free_gb": round(free_mem / (1024**3), 2),
+        "vram_total_gb": round(total_mem / (1024**3), 2)
+    }
 
 # Khởi động Uvicorn ngầm và Cloudflare Tunnel
 nest_asyncio.apply()
@@ -461,6 +480,24 @@ def compress_audio_for_colab(audio_path, log_callback):
         ext = os.path.splitext(audio_path)[1].replace(".", "").lower() or "wav"
         return base64.b64encode(f.read()).decode("utf-8"), ext
 
+def clear_colab_gpu_memory(colab_url, log_callback=None):
+    """Gửi tín hiệu dọn sạch và giải phóng 100% VRAM GPU Colab ngay khi hoàn tất 1 file."""
+    if not colab_url or not colab_url.startswith("http"):
+        return
+    for endpoint in ("/clear_memory", "/purge_cache"):
+        url = f"{colab_url.rstrip('/')}{endpoint}"
+        try:
+            req = urllib.request.Request(url, data=b"{}", headers={"Content-Type": "application/json", "User-Agent": "CapCutSTTTool/2.0"}, method="POST")
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                free_gb = data.get("vram_free_gb")
+                total_gb = data.get("vram_total_gb")
+                if log_callback and free_gb is not None:
+                    log_callback(f"  -> Đã giải phóng VRAM GPU Colab (Trống {free_gb}GB / {total_gb}GB VRAM), sẵn sàng cho dự án tiếp theo!")
+                return
+        except Exception:
+            continue
+
 def transcribe_audio_colab(colab_url, audio_path, language_code, log_callback, stop_event=None):
     """Gửi âm thanh lên GPU Colab Tesla T4 và nhận lại danh sách segments."""
     b64_audio, audio_ext = compress_audio_for_colab(audio_path, log_callback)
@@ -473,7 +510,7 @@ def transcribe_audio_colab(colab_url, audio_path, language_code, log_callback, s
         "audio_base64": b64_audio,
         "audio_ext": audio_ext,
         "language": language_code or "auto",
-        "batch_size": 24, # Khai thác tối đa 13.0 - 13.5 GB VRAM trên Tesla T4
+        "batch_size": 36, # Khai thác tối đa 13.0 - 13.5 GB VRAM trên Tesla T4
         "beam_size": 5,
         "vad_filter": True
     }).encode("utf-8")
@@ -553,12 +590,7 @@ def is_hallucination_or_repetitive(text, duration=None):
     if not clean:
         return True
     
-    # 1. Kiểm tra danh sách đen cụm từ YouTube outro ma
-    for p in COMPILED_HALLUCINATIONS:
-        if p.search(clean):
-            return True
-            
-    # 2. Kiểm tra vòng lặp token bất thường (ví dụ: A: A: A: hoặc nguồn nguồn nguồn)
+    # 1. Kiểm tra vòng lặp token bất thường (ví dụ: A: A: A: hoặc nguồn nguồn nguồn lặp >= 3 lần)
     words = [w.strip(".,!?:;\"'()[]{}") for w in clean.split() if w.strip(".,!?:;\"'()[]{}")]
     if len(words) >= 4:
         streak = 1
@@ -574,8 +606,16 @@ def is_hallucination_or_repetitive(text, duration=None):
             
         c = Counter(w.lower() for w in words)
         top_word, count = c.most_common(1)[0]
-        if count / len(words) >= 0.55:
+        if count / len(words) >= 0.65:
             return True
+
+    # 2. Kiểm tra cụm từ YouTube outro ma:
+    # CHỈ lọc khi thời lượng dài bất thường trên nền nhạc/im lặng (Whisper bịa chữ khi có nhạc)
+    # NẾU câu nói là lời thuyết minh thật (nói tự nhiên trong thời lượng hợp lý <= 6.5s): GIỮ LẠI 100%!
+    for p in COMPILED_HALLUCINATIONS:
+        if p.search(clean):
+            if len(words) <= 10 or (duration is not None and duration > 6.0 and len(words) <= 14):
+                return True
 
     return False
 
@@ -1654,6 +1694,9 @@ class CapCutBatchStudioApp(tk.Tk):
                     self.log(f"  -> Đã xuất file phụ đề: {os.path.basename(srt_p)}")
                 except Exception:
                     pass
+                    
+                # 8. Giải phóng VRAM GPU Colab ngay lập tức cho dự án kế tiếp trong hàng đợi
+                clear_colab_gpu_memory(colab_url, self.log)
                 
                 dur_item = round(time.time() - item_start_t, 1)
                 _safe_update(lambda i=item_id, n=name, ix=idx, d=dur_item: [
