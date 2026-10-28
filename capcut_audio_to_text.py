@@ -740,37 +740,64 @@ def split_cjk_text(text, max_chars=20):
     return [c for c in chunks if c]
 
 def split_segment_with_words(seg, max_words=13):
-    """Sử dụng trực tiếp Word Timestamps của Whisper để canh mốc từng mili-giây chuẩn xác."""
+    """
+    Tách phân đoạn thông minh bằng Word Timestamps (Sentence-First Splitting):
+    1. Ưu tiên ngắt tại dấu kết thúc câu (. ? ! 。 ？ ！): hết ý câu là ngắt ngay thành 1 phân đoạn độc lập.
+    2. Nếu câu quá dài (> max_words), ngắt phụ tại dấu phẩy hoặc điểm ngắt tự nhiên.
+    """
     words = seg.get("words", [])
-    if not words or len(words) <= max_words:
+    if not words:
         return [{"start": seg["start"], "end": seg["end"], "text": seg["text"]}]
-        
+
+    SENTENCE_END = ('.', '?', '!', '。', '？', '！')
+    CLAUSE_END = (',', ';', ':', '—', '…', '，', '、', '；', '：')
+
     chunks = []
     curr_words = []
-    
-    for w in words:
+
+    for idx, w in enumerate(words):
         curr_words.append(w)
         word_str = w["word"].strip()
-        ends_with_punct = bool(word_str and word_str[-1] in (',', '.', '?', '!', ';', ':', '—', '…', '¿', '¡', '，', '。', '？', '！', '、', '；', '：'))
+        if not word_str:
+            continue
         
-        if len(curr_words) >= max_words or (ends_with_punct and len(curr_words) >= max(3, max_words - 4)):
+        last_char = word_str[-1]
+        is_sentence_end = (last_char in SENTENCE_END)
+        # Bỏ qua trường hợp số thập phân như '3.14'
+        if is_sentence_end and last_char == '.' and re.match(r'^\d+\.$', word_str):
+            if idx + 1 < len(words) and re.match(r'^\d+', words[idx + 1]["word"].strip()):
+                is_sentence_end = False
+
+        is_clause_end = (last_char in CLAUSE_END)
+        
+        should_split = False
+        if is_sentence_end:
+            should_split = True
+        elif is_clause_end and len(curr_words) >= max(4, max_words - 4):
+            should_split = True
+        elif len(curr_words) >= max_words:
+            should_split = True
+
+        if should_split:
             c_text = " ".join(cw["word"].strip() for cw in curr_words).strip()
+            if c_text:
+                chunks.append({
+                    "start": curr_words[0]["start"],
+                    "end": curr_words[-1]["end"],
+                    "text": c_text
+                })
+            curr_words = []
+
+    if curr_words:
+        c_text = " ".join(cw["word"].strip() for cw in curr_words).strip()
+        if c_text:
             chunks.append({
                 "start": curr_words[0]["start"],
                 "end": curr_words[-1]["end"],
                 "text": c_text
             })
-            curr_words = []
-            
-    if curr_words:
-        c_text = " ".join(cw["word"].strip() for cw in curr_words).strip()
-        chunks.append({
-            "start": curr_words[0]["start"],
-            "end": curr_words[-1]["end"],
-            "text": c_text
-        })
-        
-    return chunks
+
+    return chunks if chunks else [{"start": seg["start"], "end": seg["end"], "text": seg["text"]}]
 
 COMMON_COMPOUND_WORDS = {
     "giông bão", "dông bão", "sóng gió", "đau khổ", "hạnh phúc", "yêu thương",
@@ -787,23 +814,44 @@ def clean_word(word):
     import re
     return re.sub(r'[^\w\s]', '', word).lower().strip()
 
-def wrap_text(text, max_chars=40):
-    words = text.split()
-    lines = []
-    curr = []
+def wrap_subtitle_2lines(text, max_chars_per_line=36):
+    """
+    Quy tắc Vàng cho phụ đề CapCut:
+    - KHÔNG BAO GIỜ vượt quá 2 dòng (Tối đa 2 dòng).
+    - Nếu câu ngắn (<= max_chars_per_line): Hiển thị 1 dòng duy nhất thanh thoát.
+    - Nếu câu dài (> max_chars_per_line): Tự động tìm vị trí khoảng trắng gần 50% độ dài
+      nhất để chia đều thành 2 dòng cân đối (Balanced Wrap), không bao giờ để chữ thừa rớt xuống dòng 3.
+    """
+    clean = text.strip()
+    if not clean:
+        return ""
+    if len(clean) <= max_chars_per_line:
+        return clean
+    words = clean.split()
+    if len(words) <= 1:
+        return clean
+    total_len = len(clean)
+    target_mid = total_len / 2.0
+    best_split_idx = 1
+    best_diff = 999.0
     curr_len = 0
-    for w in words:
-        w_len = len(w)
-        add = w_len + (1 if curr else 0)
-        if curr_len + add <= max_chars:
-            curr.append(w)
-            curr_len += add
-        else:
-            if curr: lines.append(" ".join(curr))
-            curr = [w]
-            curr_len = w_len
-    if curr: lines.append(" ".join(curr))
-    return "\n".join(lines)
+    for i in range(len(words) - 1):
+        curr_len += len(words[i])
+        if i > 0:
+            curr_len += 1
+        diff = abs(curr_len - target_mid)
+        if words[i].endswith((',', '，', '、', ';', ':')):
+            diff -= 4.0
+        if diff < best_diff:
+            best_diff = diff
+            best_split_idx = i + 1
+    line1 = " ".join(words[:best_split_idx]).strip()
+    line2 = " ".join(words[best_split_idx:]).strip()
+    return f"{line1}\n{line2}"
+
+def wrap_text(text, max_chars=36):
+    """Giữ hàm wrap_text tương thích, tự động gọi wrap_subtitle_2lines."""
+    return wrap_subtitle_2lines(text, max_chars_per_line=max_chars)
 
 def split_segments_by_words(segments, max_words=13):
     new_segments = []
@@ -1010,7 +1058,7 @@ def insert_text_into_draft(project_path, segments, dry_run, log_callback, timeli
     for i, seg in enumerate(segments):
         start_sec = seg["start"]
         end_sec = seg["end"]
-        text_content_wrapped = wrap_text(seg["text"], max_chars=40)
+        text_content_wrapped = wrap_subtitle_2lines(seg["text"], max_chars_per_line=36)
         start_us = int(start_sec * 1_000_000) + timeline_offset_us
         duration_us = int((end_sec - start_sec) * 1_000_000)
         if duration_us <= 0: continue
