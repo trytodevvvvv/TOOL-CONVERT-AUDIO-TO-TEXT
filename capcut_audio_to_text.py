@@ -404,6 +404,125 @@ else:
     print("❌ Lỗi: Không thể lấy được link Cloudflare. Vui lòng thử lại.")
 """
 
+def check_colab_health(colab_url):
+    """Kiểm tra tình trạng máy chủ GPU Google Colab."""
+    if not colab_url or not colab_url.startswith("http"):
+        return False, "Link Colab không hợp lệ (cần bắt đầu bằng https://)"
+    url = f"{colab_url.rstrip('/')}/health"
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "CapCutSTTTool/2.0"})
+        with urllib.request.urlopen(req, timeout=7) as resp:
+            if resp.status == 200:
+                data = json.loads(resp.read().decode("utf-8"))
+                gpu = data.get("gpu_name", "GPU")
+                vram_free = data.get("vram_free_gb", 0)
+                vram_total = data.get("vram_total_gb", 0)
+                return True, f"ĐÃ KẾT NỐI: {gpu} (Trống {vram_free}GB / {vram_total}GB VRAM) - Whisper Large-v3"
+            return False, f"Server phản hồi mã lỗi: {resp.status}"
+    except Exception as e:
+        return False, f"Không thể kết nối Colab: {e}"
+
+def compress_audio_for_colab(audio_path, log_callback):
+    """
+    Nén nhanh âm thanh sang 16kHz Mono FLAC lossless bằng FFmpeg
+    để giảm dung lượng 80-90% trước khi tải lên Colab.
+    """
+    setup_ffmpeg_path()
+    ffmpeg_exe = shutil.which("ffmpeg")
+    temp_dir = tempfile.gettempdir()
+    flac_out = os.path.join(temp_dir, f"capcut_stt_{uuid.uuid4().hex[:8]}.flac")
+    
+    if ffmpeg_exe:
+        log_callback("  -> Nén audio sang 16kHz mono FLAC siêu tốc trước khi tải lên Colab...")
+        cmd = [
+            ffmpeg_exe, "-y",
+            "-i", audio_path,
+            "-vn",
+            "-ac", "1",
+            "-ar", "16000",
+            "-c:a", "flac",
+            flac_out
+        ]
+        try:
+            subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+            if os.path.exists(flac_out) and os.path.getsize(flac_out) > 0:
+                orig_mb = os.path.getsize(audio_path) / (1024 * 1024)
+                flac_mb = os.path.getsize(flac_out) / (1024 * 1024)
+                log_callback(f"  -> Nén thành công: {orig_mb:.1f} MB -> {flac_mb:.1f} MB (Tải lên Colab chỉ mất 1-2s)")
+                with open(flac_out, "rb") as f:
+                    b64_data = base64.b64encode(f.read()).decode("utf-8")
+                try: os.remove(flac_out)
+                except Exception: pass
+                return b64_data, "flac"
+        except Exception as e:
+            log_callback(f"  [Cảnh báo FFmpeg] {e}. Sẽ nạp trực tiếp file gốc...")
+
+    with open(audio_path, "rb") as f:
+        ext = os.path.splitext(audio_path)[1].replace(".", "").lower() or "wav"
+        return base64.b64encode(f.read()).decode("utf-8"), ext
+
+def transcribe_audio_colab(colab_url, audio_path, language_code, log_callback, stop_event=None):
+    """Gửi âm thanh lên GPU Colab Tesla T4 và nhận lại danh sách segments."""
+    b64_audio, audio_ext = compress_audio_for_colab(audio_path, log_callback)
+    
+    if stop_event and stop_event.is_set():
+        raise InterruptedError("Tiến trình đã bị người dùng hủy.")
+        
+    submit_url = f"{colab_url.rstrip('/')}/task_submit"
+    payload = json.dumps({
+        "audio_base64": b64_audio,
+        "audio_ext": audio_ext,
+        "language": language_code or "auto",
+        "batch_size": 24, # Khai thác tối đa 13.0 - 13.5 GB VRAM trên Tesla T4
+        "beam_size": 5,
+        "vad_filter": True
+    }).encode("utf-8")
+    
+    log_callback("  -> Đang gửi file lên GPU Colab T4...")
+    req = urllib.request.Request(submit_url, data=payload, headers={"Content-Type": "application/json", "User-Agent": "CapCutSTTTool/2.0"}, method="POST")
+    
+    with urllib.request.urlopen(req, timeout=45) as resp:
+        res = json.loads(resp.read().decode("utf-8"))
+        
+    task_id = res.get("task_id")
+    if not task_id:
+        raise RuntimeError(f"Server Colab không trả về task_id: {res}")
+        
+    log_callback(f"  -> Tác vụ đã vào hàng đợi GPU Colab (ID: {task_id[:8]}...). Đang giải mã...")
+    status_url = f"{colab_url.rstrip('/')}/task_status/{task_id}"
+    start_time = time.time()
+    
+    while True:
+        if stop_event and stop_event.is_set():
+            raise InterruptedError("Tiến trình đã bị hủy.")
+        time.sleep(1.5)
+        try:
+            poll_req = urllib.request.Request(status_url, headers={"User-Agent": "CapCutSTTTool/2.0"})
+            with urllib.request.urlopen(poll_req, timeout=15) as poll_resp:
+                status_data = json.loads(poll_resp.read().decode("utf-8"))
+        except Exception:
+            continue
+            
+        status = status_data.get("status")
+        if status == "completed":
+            result = status_data.get("result", {})
+            proc_time = result.get("processing_time_sec", round(time.time() - start_time, 2))
+            segments = result.get("segments", [])
+            log_callback(f"  -> GPU Tesla T4 hoàn thành trong {proc_time}s! Nhận diện {len(segments)} đoạn phụ đề.")
+            try:
+                clear_req = urllib.request.Request(f"{colab_url.rstrip('/')}/task_clear/{task_id}", data=b"{}", headers={"Content-Type": "application/json"}, method="POST")
+                urllib.request.urlopen(clear_req, timeout=5)
+            except Exception: pass
+            return segments
+        elif status == "failed":
+            err_msg = status_data.get("error", "Lỗi xử lý trên Colab")
+            raise RuntimeError(f"Colab GPU báo lỗi: {err_msg}")
+        else:
+            elapsed = int(time.time() - start_time)
+            if elapsed % 6 == 0 and elapsed > 0:
+                log_callback(f"  ... Tesla T4 đang xử lý song song ({elapsed}s)...")
+
+
 # ==============================================================================
 # PHẦN 3: XỬ LÝ VĂN BẢN & XUẤT PHỤ ĐỀ CAPCUT / SRT
 # ==============================================================================
@@ -560,6 +679,17 @@ def split_segment_with_words(seg, max_words=13):
         })
         
     return chunks
+
+COMMON_COMPOUND_WORDS = {
+    "giông bão", "dông bão", "sóng gió", "đau khổ", "hạnh phúc", "yêu thương",
+    "nhân quả", "nghiệp báo", "bình an", "tự tại", "trí tuệ", "giác ngộ",
+    "từ bi", "vô thường", "luân hồi", "giải thoát", "buông thư", "hiện tại",
+    "quá khứ", "tương lai", "tổn thương", "mệt mỏi", "đau buồn", "thiện lương",
+    "phật pháp", "tu hành", "cuộc sống", "tâm hồn", "tinh thần", "gia đình",
+    "sự nghiệp", "thành công", "thất bại", "sinh tử", "đất trời", "núi sông",
+    "gió sương", "mưa nắng", "ngày đêm", "học tập", "làm việc", "vui vẻ",
+    "phút giây", "giây phút", "miệng cười"
+}
 
 def clean_word(word):
     import re
