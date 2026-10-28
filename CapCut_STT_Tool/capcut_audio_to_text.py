@@ -248,9 +248,9 @@ def _execute_transcribe(req: TranscribeRequest):
 
         vad_params = dict(
             threshold=0.35,
-            min_speech_duration_ms=250,
-            min_silence_duration_ms=1200,
-            speech_pad_ms=600
+            min_speech_duration_ms=200,
+            min_silence_duration_ms=800,
+            speech_pad_ms=200
         )
 
         transcribe_kwargs = dict(
@@ -684,6 +684,41 @@ def filter_hallucinations_and_loops(segments, language=None):
             continue
         clean_list.append(s)
     return clean_list
+
+def apply_subtitle_sync_offset(segments, offset_sec=-0.20):
+    """
+    Dịch chuyển mốc thời gian phụ đề (mặc định -200ms = -0.2s)
+    giúp phụ đề xuất hiện đón đầu giọng đọc (Lead-in Time)
+    khớp chuẩn phản xạ thị giác người xem và triệt tiêu độ trễ attention của Whisper.
+    """
+    if not segments or abs(offset_sec) < 0.001:
+        return segments
+        
+    adjusted = []
+    for s in segments:
+        new_s = dict(s)
+        st = round(float(new_s.get("start", 0)) + offset_sec, 3)
+        et = round(float(new_s.get("end", 0)) + offset_sec, 3)
+        st = max(0.0, st)
+        if et <= st + 0.1:
+            et = round(st + max(0.1, float(s.get("end", 0)) - float(s.get("start", 0))), 3)
+            
+        new_s["start"] = st
+        new_s["end"] = et
+        
+        if "words" in new_s and isinstance(new_s["words"], list):
+            adj_words = []
+            for w in new_s["words"]:
+                nw = dict(w)
+                if "start" in nw:
+                    nw["start"] = max(0.0, round(float(nw["start"]) + offset_sec, 3))
+                if "end" in nw:
+                    nw["end"] = max(nw.get("start", 0.0) + 0.05, round(float(nw["end"]) + offset_sec, 3))
+                adj_words.append(nw)
+            new_s["words"] = adj_words
+            
+        adjusted.append(new_s)
+    return adjusted
 
 def reconcile_segment_overlaps(segments, min_duration=0.1, min_gap=0.03):
     """
@@ -1209,6 +1244,7 @@ class CapCutBatchStudioApp(tk.Tk):
         self.var_language = tk.StringVar(value=self.config.get("language", "Tự động nhận diện"))
         self.var_max_words = tk.IntVar(value=self.config.get("max_words", 13))
         self.var_font_size = tk.DoubleVar(value=self.config.get("font_size", 6.0))
+        self.var_sync_offset_ms = tk.IntVar(value=self.config.get("sync_offset_ms", -200))
         self.var_group_sub = tk.BooleanVar(value=self.config.get("group_subtitles", True))
         self.gpu_power_map = {
             "⚡ Tối ưu (Batch 18 - ~12.5GB Peak)": 18,
@@ -1440,24 +1476,29 @@ class CapCutBatchStudioApp(tk.Tk):
         cb_gpu_power = ttk.Combobox(grid_ai_gpu, textvariable=self.var_gpu_power, values=list(self.gpu_power_map.keys()), state="readonly", font=("Segoe UI", 9))
         cb_gpu_power.grid(row=0, column=3, sticky="ew", padx=(6, 0), pady=2)
         
-        # Hàng 2: Thông số phụ đề CapCut (Cỡ chữ, Giới hạn từ, Kiểu Sub)
+        # Hàng 2: Thông số phụ đề CapCut (Cỡ chữ, Từ/câu, Lệch Sync, Kiểu Sub)
         row_sub_opts = tk.Frame(card_sub_opts, bg=self.bg_card)
         row_sub_opts.pack(fill=tk.X, pady=(0, 6))
         
         tk.Label(row_sub_opts, text="Cỡ chữ:", font=("Segoe UI", 9, "bold"), fg=self.fg_main, bg=self.bg_card).pack(side=tk.LEFT, padx=(0, 4))
-        sb_font_size = tk.Spinbox(row_sub_opts, from_=1.0, to=30.0, increment=0.5, textvariable=self.var_font_size, width=5, bg=self.bg_card_inner, fg=self.fg_main, bd=1, relief=tk.SOLID, font=("Segoe UI", 9))
-        sb_font_size.pack(side=tk.LEFT, padx=(0, 14))
+        sb_font_size = tk.Spinbox(row_sub_opts, from_=1.0, to=30.0, increment=0.5, textvariable=self.var_font_size, width=4, bg=self.bg_card_inner, fg=self.fg_main, bd=1, relief=tk.SOLID, font=("Segoe UI", 9))
+        sb_font_size.pack(side=tk.LEFT, padx=(0, 10))
         
-        tk.Label(row_sub_opts, text="Giới hạn từ:", font=("Segoe UI", 9, "bold"), fg=self.fg_main, bg=self.bg_card).pack(side=tk.LEFT, padx=(0, 4))
-        sb_words = tk.Spinbox(row_sub_opts, from_=1, to=100, textvariable=self.var_max_words, width=5, bg=self.bg_card_inner, fg=self.fg_main, bd=1, relief=tk.SOLID, font=("Segoe UI", 9))
-        sb_words.pack(side=tk.LEFT, padx=(0, 16))
+        tk.Label(row_sub_opts, text="Từ/câu:", font=("Segoe UI", 9, "bold"), fg=self.fg_main, bg=self.bg_card).pack(side=tk.LEFT, padx=(0, 4))
+        sb_words = tk.Spinbox(row_sub_opts, from_=1, to=100, textvariable=self.var_max_words, width=4, bg=self.bg_card_inner, fg=self.fg_main, bd=1, relief=tk.SOLID, font=("Segoe UI", 9))
+        sb_words.pack(side=tk.LEFT, padx=(0, 10))
         
-        tk.Label(row_sub_opts, text="Kiểu phụ đề:", font=("Segoe UI", 9, "bold"), fg=self.fg_main, bg=self.bg_card).pack(side=tk.LEFT, padx=(0, 8))
-        r_group = tk.Radiobutton(row_sub_opts, text="Nhóm Sub (Đồng bộ)", variable=self.var_group_sub, value=True,
+        tk.Label(row_sub_opts, text="Lệch Sync:", font=("Segoe UI", 9, "bold"), fg=self.fg_main, bg=self.bg_card).pack(side=tk.LEFT, padx=(0, 4))
+        sb_sync = tk.Spinbox(row_sub_opts, from_=-1000, to=1000, increment=50, textvariable=self.var_sync_offset_ms, width=5, bg=self.bg_card_inner, fg=self.accent_cyan, bd=1, relief=tk.SOLID, font=("Segoe UI", 9, "bold"))
+        sb_sync.pack(side=tk.LEFT, padx=(0, 2))
+        tk.Label(row_sub_opts, text="ms", font=("Segoe UI", 8), fg="#94A3B8", bg=self.bg_card).pack(side=tk.LEFT, padx=(0, 12))
+        
+        tk.Label(row_sub_opts, text="Kiểu:", font=("Segoe UI", 9, "bold"), fg=self.fg_main, bg=self.bg_card).pack(side=tk.LEFT, padx=(0, 6))
+        r_group = tk.Radiobutton(row_sub_opts, text="Nhóm Sub", variable=self.var_group_sub, value=True,
                                  bg=self.bg_card, fg=self.accent_green, activebackground=self.bg_card, selectcolor=self.bg_card_inner, font=("Segoe UI", 9))
-        r_group.pack(side=tk.LEFT, padx=(0, 10))
+        r_group.pack(side=tk.LEFT, padx=(0, 8))
         
-        r_nogroup = tk.Radiobutton(row_sub_opts, text="Văn bản rời", variable=self.var_group_sub, value=False,
+        r_nogroup = tk.Radiobutton(row_sub_opts, text="Rời", variable=self.var_group_sub, value=False,
                                    bg=self.bg_card, fg=self.accent_orange, activebackground=self.bg_card, selectcolor=self.bg_card_inner, font=("Segoe UI", 9))
         r_nogroup.pack(side=tk.LEFT)
         
@@ -1824,6 +1865,12 @@ class CapCutBatchStudioApp(tk.Tk):
                 # 4. Tách đoạn thông minh thích ứng theo ngôn ngữ & Word Timestamps chuẩn xác
                 segments = split_segments_adaptive(filtered_segments, max_words=max_words, language=language_code)
                 
+                # 4b. Tinh chỉnh đồng bộ âm thanh - phụ đề (Lead-in Sync Offset)
+                sync_offset_sec = float(self.var_sync_offset_ms.get()) / 1000.0
+                if abs(sync_offset_sec) >= 0.001:
+                    segments = apply_subtitle_sync_offset(segments, offset_sec=sync_offset_sec)
+                    self.log(f"  -> Áp dụng bù lệch Sync: {int(self.var_sync_offset_ms.get())}ms (xuất hiện đón đầu giọng đọc)")
+                
                 # 5. Khử đè layer (Đảm bảo 100% không trùng mốc thời gian, duy trì 1 Track duy nhất)
                 final_segments = reconcile_segment_overlaps(segments)
                 
@@ -1893,6 +1940,7 @@ class CapCutBatchStudioApp(tk.Tk):
             "language": "Tự động nhận diện",
             "max_words": 13,
             "font_size": 6.0,
+            "sync_offset_ms": -200,
             "group_subtitles": True,
             "gpu_power": "⚡ Tối ưu (Batch 18 - ~12.5GB Peak)",
             "auto_export_srt": True,
@@ -1919,6 +1967,7 @@ class CapCutBatchStudioApp(tk.Tk):
                 "language": self.var_language.get(),
                 "max_words": int(self.var_max_words.get()),
                 "font_size": float(self.var_font_size.get()),
+                "sync_offset_ms": int(self.var_sync_offset_ms.get()),
                 "group_subtitles": bool(self.var_group_sub.get()),
                 "gpu_power": self.var_gpu_power.get(),
                 "auto_export_srt": True,

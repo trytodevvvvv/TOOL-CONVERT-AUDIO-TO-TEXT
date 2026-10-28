@@ -165,8 +165,8 @@ def _execute_transcribe(req: TranscribeRequest):
         vad_params = dict(
             threshold=0.35,
             min_speech_duration_ms=200,
-            min_silence_duration_ms=1200,
-            speech_pad_ms=600
+            min_silence_duration_ms=800,
+            speech_pad_ms=200
         )
 
         transcribe_kwargs = dict(
