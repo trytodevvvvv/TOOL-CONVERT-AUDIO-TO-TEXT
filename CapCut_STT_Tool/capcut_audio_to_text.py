@@ -118,7 +118,6 @@ def get_colab_run_code():
 # BƯỚC 1: Cài đặt thư viện Faster-Whisper, FastAPI & Cloudflared
 # ==============================================================================
 !pip install -q faster-whisper "av<18" nvidia-cublas-cu12 nvidia-cudnn-cu12 fastapi uvicorn pydantic nest-asyncio soundfile
-!python3 -c "import site, os; sp=site.getsitepackages()[0]; open('/etc/ld.so.conf.d/nvidia-cu12.conf', 'w').write(f'{sp}/nvidia/cublas/lib\n{sp}/nvidia/cudnn/lib\n'); os.system('ldconfig')"
 !wget -q -nc https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
 !dpkg -i cloudflared-linux-amd64.deb > /dev/null 2>&1
 print("✅ [1/2] Đã cài đặt hoàn tất các gói thư viện!")
@@ -134,12 +133,19 @@ for sp in site.getsitepackages():
     cublas_lib = os.path.join(sp, "nvidia", "cublas", "lib")
     cudnn_lib = os.path.join(sp, "nvidia", "cudnn", "lib")
     if os.path.exists(cublas_lib):
+        try:
+            with open("/etc/ld.so.conf.d/nvidia-cu12.conf", "w") as f:
+                f.write(cublas_lib + chr(10) + cudnn_lib + chr(10))
+            subprocess.run(["ldconfig"], check=False)
+        except Exception:
+            pass
         os.environ["LD_LIBRARY_PATH"] = f"{cublas_lib}:{cudnn_lib}:" + os.environ.get("LD_LIBRARY_PATH", "")
         for lib_file in sorted(glob.glob(os.path.join(cublas_lib, "*.so*")) + glob.glob(os.path.join(cudnn_lib, "*.so*"))):
             try:
                 ctypes.CDLL(lib_file, mode=ctypes.RTLD_GLOBAL)
             except Exception:
                 pass
+        break
 
 # 2. Vá lỗi tương thích giữa PyAV và faster-whisper (loại bỏ metadata_errors trên PyAV 18+)
 try:

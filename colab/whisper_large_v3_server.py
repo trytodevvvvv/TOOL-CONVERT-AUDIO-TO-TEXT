@@ -22,12 +22,19 @@ for sp in site.getsitepackages():
     cublas_lib = os.path.join(sp, "nvidia", "cublas", "lib")
     cudnn_lib = os.path.join(sp, "nvidia", "cudnn", "lib")
     if os.path.exists(cublas_lib):
+        try:
+            with open("/etc/ld.so.conf.d/nvidia-cu12.conf", "w") as f:
+                f.write(cublas_lib + chr(10) + cudnn_lib + chr(10))
+            subprocess.run(["ldconfig"], check=False)
+        except Exception:
+            pass
         os.environ["LD_LIBRARY_PATH"] = f"{cublas_lib}:{cudnn_lib}:" + os.environ.get("LD_LIBRARY_PATH", "")
         for lib_file in sorted(glob.glob(os.path.join(cublas_lib, "*.so*")) + glob.glob(os.path.join(cudnn_lib, "*.so*"))):
             try:
                 ctypes.CDLL(lib_file, mode=ctypes.RTLD_GLOBAL)
             except Exception:
                 pass
+        break
 
 # Cấu hình PyTorch CUDA Memory Allocator chống phân mảnh RAM GPU khi chạy ở mức 13.5GB
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
