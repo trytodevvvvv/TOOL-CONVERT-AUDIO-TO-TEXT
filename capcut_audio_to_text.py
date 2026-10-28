@@ -247,7 +247,7 @@ def _execute_transcribe(req: TranscribeRequest):
         vad = True if req.vad_filter is None else req.vad_filter
 
         vad_params = dict(
-            threshold=0.25,
+            threshold=0.35,
             min_speech_duration_ms=250,
             min_silence_duration_ms=1200,
             speech_pad_ms=600
@@ -261,6 +261,7 @@ def _execute_transcribe(req: TranscribeRequest):
             word_timestamps=True,
             initial_prompt=initial_prompt,
             repetition_penalty=1.15,
+            no_speech_threshold=0.6,
             hallucination_silence_threshold=2.0
         )
 
@@ -1124,6 +1125,9 @@ def find_audio_candidates(project_path):
         audios, videos = [], []
         for track in draft_data.get("tracks", []):
             t_type = track.get("type")
+            # Bỏ qua nếu track bị tắt tiếng (Mute)
+            if track.get("attribute", 0) == 1 or track.get("is_mute", False):
+                continue
             for seg in track.get("segments", []):
                 mat_id = seg.get("material_id")
                 if mat_id and mat_id in mat_map:
@@ -1134,7 +1138,12 @@ def find_audio_candidates(project_path):
                         offset_us = t_range.get("start", 0) - (s_range.get("start", 0) if s_range else 0)
                         target_list = audios if t_type == "audio" else videos
                         if not any(c["path"] == f_path for c in target_list):
-                            target_list.append({"path": f_path, "offset_us": offset_us})
+                            target_list.append({
+                                "path": f_path,
+                                "offset_us": offset_us,
+                                "type": t_type,
+                                "name": os.path.basename(f_path)
+                            })
         candidates = audios + videos
     except Exception: pass
     return candidates
@@ -1789,9 +1798,20 @@ class CapCutBatchStudioApp(tk.Tk):
                 # 1. Tìm audio/video trên timeline của dự án CapCut
                 candidates = find_audio_candidates(path)
                 if not candidates:
-                    raise FileNotFoundError("Không tìm thấy tệp audio/video nào trên timeline của dự án này!")
-                audio_target = candidates[0]["path"]
-                offset_us = candidates[0]["offset_us"]
+                    self.log(f"  [BỎ QUA] Dự án '{name}' không có tệp audio hoặc video có tiếng trên timeline!")
+                    self.update_queue_status(item["id"], "Bỏ qua (Không có tiếng)")
+                    continue
+                
+                best_candidate = candidates[0]
+                audio_target = best_candidate["path"]
+                offset_us = best_candidate["offset_us"]
+                src_type = best_candidate.get("type", "audio")
+                src_name = best_candidate.get("name", os.path.basename(audio_target))
+                
+                if src_type == "audio":
+                    self.log(f"  -> Nguồn âm thanh phát hiện: [Track Audio] {src_name}")
+                else:
+                    self.log(f"  -> Nguồn âm thanh phát hiện: [Track Video] {src_name} (Tự động trích xuất từ video timeline)")
                     
                 # 2. Gửi sang Colab Large-v3 GPU
                 raw_segments = transcribe_audio_colab(colab_url, audio_target, language_code, self.log, batch_size=chosen_batch, stop_event=self.stop_event)

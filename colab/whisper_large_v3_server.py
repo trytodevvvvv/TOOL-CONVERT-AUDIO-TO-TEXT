@@ -163,7 +163,7 @@ def _execute_transcribe(req: TranscribeRequest):
         vad = True if req.vad_filter is None else req.vad_filter
 
         vad_params = dict(
-            threshold=0.25,
+            threshold=0.35,
             min_speech_duration_ms=200,
             min_silence_duration_ms=1200,
             speech_pad_ms=600
@@ -177,6 +177,7 @@ def _execute_transcribe(req: TranscribeRequest):
             word_timestamps=True,
             initial_prompt=initial_prompt,
             repetition_penalty=1.15,
+            no_speech_threshold=0.6,
             hallucination_silence_threshold=2.0
         )
 
