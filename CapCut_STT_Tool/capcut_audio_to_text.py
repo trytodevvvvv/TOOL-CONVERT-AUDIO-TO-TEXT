@@ -9,6 +9,78 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
 # ==========================================
+# THIẾT LẬP MÔI TRƯỜNG & ĐƯỜNG DẪN HỆ THỐNG
+# ==========================================
+
+def setup_ffmpeg_path():
+    """
+    Tự động dò tìm và nạp đường dẫn FFmpeg vào PATH để Whisper sử dụng được
+    ngay cả khi người dùng chưa cấu hình biến môi trường thủ công.
+    """
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    
+    # 1. Kiểm tra trong thư mục hiện tại hoặc thư mục con ffmpeg
+    candidates = [
+        current_dir,
+        os.path.join(current_dir, "ffmpeg"),
+        os.path.join(current_dir, "ffmpeg", "bin")
+    ]
+    for c in candidates:
+        if os.path.exists(c) and os.path.exists(os.path.join(c, "ffmpeg.exe")):
+            if c not in os.environ.get("PATH", ""):
+                os.environ["PATH"] = c + os.pathsep + os.environ.get("PATH", "")
+            return
+            
+    if shutil.which("ffmpeg"):
+        return
+            
+    # 2. Tự động trích xuất binary của imageio_ffmpeg nếu người dùng đã cài qua pip
+    try:
+        import importlib
+        imageio_ffmpeg = importlib.import_module("imageio_ffmpeg")
+        ffmpeg_exe = getattr(imageio_ffmpeg, "get_ffmpeg_exe", lambda: "")()
+        if ffmpeg_exe and os.path.exists(ffmpeg_exe):
+            ffmpeg_dir = os.path.dirname(ffmpeg_exe)
+            target_ffmpeg = os.path.join(ffmpeg_dir, "ffmpeg.exe")
+            if not os.path.exists(target_ffmpeg):
+                try:
+                    shutil.copyfile(ffmpeg_exe, target_ffmpeg)
+                except Exception:
+                    pass
+            # Sao chép vào thư mục tool để dùng offline sau này
+            local_ffmpeg = os.path.join(current_dir, "ffmpeg.exe")
+            if not os.path.exists(local_ffmpeg):
+                try:
+                    shutil.copyfile(ffmpeg_exe, local_ffmpeg)
+                except Exception:
+                    pass
+            os.environ["PATH"] = current_dir + os.pathsep + ffmpeg_dir + os.pathsep + os.environ.get("PATH", "")
+    except Exception:
+        pass
+
+# Khởi chạy nạp FFmpeg ngay khi import
+setup_ffmpeg_path()
+
+def get_default_drafts_dir():
+    """
+    Tự động dò tìm thư mục lưu trữ dự án mặc định của CapCut PC trên máy người dùng.
+    """
+    possible_roots = []
+    
+    local_app_data = os.environ.get("LOCALAPPDATA")
+    if local_app_data:
+        possible_roots.append(os.path.join(local_app_data, "CapCut", "User Data", "Projects", "com.lved.pc"))
+        
+    user_home = os.path.expanduser("~")
+    possible_roots.append(os.path.join(user_home, "AppData", "Local", "CapCut", "User Data", "Projects", "com.lved.pc"))
+    
+    for r in possible_roots:
+        if os.path.exists(r) and os.path.isdir(r):
+            return r.replace("\\", "/")
+            
+    return ""
+
+# ==========================================
 # PART 1: PROCESSING LOGIC (Tkinter Independent)
 # ==========================================
 
@@ -148,6 +220,12 @@ def transcribe_audio(audio_path, language, model_size, log_callback):
         raise ImportError("Thư viện 'openai-whisper' chưa được cài đặt.")
         
     global _MODEL_CACHE
+    
+    # Đảm bảo ffmpeg đã được cấu hình đường dẫn
+    setup_ffmpeg_path()
+    if not shutil.which("ffmpeg"):
+        log_callback("[CẢNH BÁO] Không tìm thấy FFmpeg trong hệ thống!")
+        log_callback("Whisper cần FFmpeg để giải mã âm thanh. Hãy chạy file install.bat hoặc đặt ffmpeg.exe vào thư mục tool.")
     
     # Kiểm tra xem GPU CUDA có khả dụng không để tối ưu phần cứng
     import torch
@@ -392,21 +470,48 @@ def split_segments_by_words(segments, max_words=13):
 def get_capcut_font_path():
     """
     Tự động tìm đường dẫn font hệ thống mặc định của ứng dụng CapCut trên máy.
+    Hỗ trợ linh hoạt mọi máy người dùng mà không bị hardcode đường dẫn cá nhân.
     """
-    try:
-        user_home = os.path.expanduser("~")
-        apps_dir = os.path.join(user_home, "AppData", "Local", "CapCut", "Apps")
-        if os.path.exists(apps_dir):
-            versions = [d for d in os.listdir(apps_dir) if os.path.isdir(os.path.join(apps_dir, d))]
-            if versions:
-                versions.sort()
-                latest_version = versions[-1]
-                font_path = os.path.join(apps_dir, latest_version, "Resources", "Font", "SystemFont", "en.ttf")
-                if os.path.exists(font_path):
-                    return font_path.replace("\\", "/")
-    except:
-        pass
-    return "C:/Users/baohu/AppData/Local/CapCut/Apps/8.9.1.3802/Resources/Font/SystemFont/en.ttf"
+    possible_app_dirs = []
+    
+    # 1. Thư mục AppData chuẩn
+    local_app_data = os.environ.get("LOCALAPPDATA")
+    if local_app_data:
+        possible_app_dirs.append(os.path.join(local_app_data, "CapCut", "Apps"))
+        
+    user_home = os.path.expanduser("~")
+    possible_app_dirs.append(os.path.join(user_home, "AppData", "Local", "CapCut", "Apps"))
+    
+    # 2. Tìm kiếm trong các ổ đĩa phổ biến nếu người dùng cài đặt ở ổ khác
+    for drive in ["C:", "D:", "E:"]:
+        possible_app_dirs.append(os.path.join(drive, "\\", "CapCut", "Apps"))
+        possible_app_dirs.append(os.path.join(drive, "\\", "Program Files", "CapCut", "Apps"))
+        possible_app_dirs.append(os.path.join(drive, "\\", "Program Files (x86)", "CapCut", "Apps"))
+        
+    for apps_dir in possible_app_dirs:
+        try:
+            if os.path.exists(apps_dir):
+                versions = [d for d in os.listdir(apps_dir) if os.path.isdir(os.path.join(apps_dir, d))]
+                if versions:
+                    versions.sort(reverse=True)  # Ưu tiên phiên bản mới nhất
+                    for v in versions:
+                        for font_candidate in [
+                            os.path.join(apps_dir, v, "Resources", "Font", "SystemFont", "en.ttf"),
+                            os.path.join(apps_dir, v, "Resources", "Font", "SystemFont", "vi.ttf"),
+                            os.path.join(apps_dir, v, "Resources", "Font", "SystemFont", "system.ttf")
+                        ]:
+                            if os.path.exists(font_candidate):
+                                return font_candidate.replace("\\", "/")
+        except Exception:
+            continue
+            
+    # 3. Fallback an toàn: Font hệ thống Windows
+    windir = os.environ.get("WINDIR", "C:\\Windows")
+    windows_font = os.path.join(windir, "Fonts", "arial.ttf")
+    if os.path.exists(windows_font):
+        return windows_font.replace("\\", "/")
+        
+    return ""
 
 def insert_text_into_draft(project_path, segments, dry_run, log_callback, timeline_offset_us=0, group_subtitles=True):
     """
@@ -474,7 +579,7 @@ def insert_text_into_draft(project_path, segments, dry_run, log_callback, timeli
         text_material_id = str(uuid.uuid4()).upper()
         segment_uuid = str(uuid.uuid4()).upper()
         
-        # Cấu trúc nội dung JSON-in-JSON chuẩn của CapCut
+        # Cấu trúc nội dung JSON-in-JSON chuẩn của CapCut PC 9.x
         content_obj = {
             "styles": [
                 {
@@ -483,7 +588,6 @@ def insert_text_into_draft(project_path, segments, dry_run, log_callback, timeli
                         "content": {
                             "render_type": "solid",
                             "solid": {
-                                "alpha": 1.0,
                                 "color": [1.0, 1.0, 1.0]
                             }
                         }
@@ -493,60 +597,179 @@ def insert_text_into_draft(project_path, segments, dry_run, log_callback, timeli
                         "path": font_path
                     },
                     "range": [0, len(text_content_wrapped)],
-                    "size": 7.0
+                    "size": 15.0,
+                    "useLetterColor": True
                 }
             ],
             "text": text_content_wrapped
         }
         content_json_str = json.dumps(content_obj, ensure_ascii=False)
         
-        # Cấu trúc subtitle material chuẩn của CapCut
-        text_material = {
-            "id": text_material_id,
-            "type": "subtitle" if group_subtitles else "text",  # Loại là subtitle để nhận diện đúng khung hình và chức năng
-            "name": "",
-            "recognize_text": text_content_wrapped,
-            "content": content_json_str,
-            "base_content": content_json_str,
-            "global_alpha": 1.0,
-            "font_size": 7.0,
-            "font_path": font_path,
-            "alignment": 1,
-            "style_name": "",
-            "text_color": "#FFFFFF",
-            "text_alpha": 1.0,
-            "sub_type": 0,
-            "group_id": shared_group_id, # Mã nhóm liên kết các phụ đề
-            "add_type": 1,
-            "recognize_type": 0
-        }
-        
-        # Tạo segment liên kết trong track
-        track_segment = {
-            "id": segment_uuid,
-            "material_id": text_material_id,
-            "target_timerange": {
-                "duration": duration_us,
-                "start": start_us
-            },
-            "source_timerange": None,
-            "render_index": 14000 + i,
-            "clip": {
-                "scale": {"x": 1.0, "y": 1.0},
-                "rotation": 0.0,
-                "transform": {"x": 0.0, "y": -0.73}, # Tọa độ chuẩn ở đáy màn hình
-                "flip": {"vertical": False, "horizontal": False},
-                "alpha": 1.0
-            },
-            "sub_type": 0,
-            "caption_template_info": {
-                "category_id": "",
-                "category_name": "",
-                "effect_id": "",
-                "is_new": False,
-                "resource_id": ""
+        if group_subtitles:
+            # === CHỨC NĂNG 1: PHỤ ĐỀ (CÓ nút "Áp dụng cho tất cả" trong CapCut) ===
+            text_material = {
+                "add_type": 1,
+                "alignment": 1,
+                "base_content": content_json_str,
+                "border_alpha": 1.0,
+                "border_color": "#000000",
+                "border_width": 0.0,
+                "caption_template_info": {
+                    "category_id": "",
+                    "category_name": "",
+                    "effect_id": "",
+                    "is_new": False,
+                    "path": "",
+                    "request_id": "",
+                    "resource_id": "",
+                    "resource_name": "",
+                    "third_resource_id": ""
+                },
+                "check_flag": 7,
+                "combo_info": {"text_templates": []},
+                "content": content_json_str,
+                "font_category_id": "",
+                "font_category_name": "",
+                "font_id": "",
+                "font_name": "",
+                "font_path": font_path,
+                "font_resource_id": "",
+                "font_size": 15.0,
+                "font_title": "none",
+                "font_url": "",
+                "fonts": [],
+                "global_alpha": 1.0,
+                "group_id": shared_group_id,
+                "has_shadow": False,
+                "id": text_material_id,
+                "initial_scale": 1.0,
+                "is_rich_text": False,
+                "line_feed": 1,
+                "line_spacing": 0.02,
+                "name": "",
+                "operation_type": 0,
+                "recognize_model": "",
+                "recognize_task_id": "",
+                "recognize_text": text_content_wrapped,
+                "recognize_type": 0,
+                "style_name": "",
+                "sub_type": 0,
+                "subtitle_id": text_material_id,
+                "text_alpha": 1.0,
+                "text_color": "#FFFFFF",
+                "text_size": 30,
+                "type": "subtitle",
+                "typesetting": 0,
+                "use_effect_default_color": False
             }
-        }
+            
+            track_segment = {
+                "id": segment_uuid,
+                "material_id": text_material_id,
+                "target_timerange": {
+                    "duration": duration_us,
+                    "start": start_us
+                },
+                "source_timerange": None,
+                "render_index": 14000 + i,
+                "clip": {
+                    "scale": {"x": 1.0, "y": 1.0},
+                    "rotation": 0.0,
+                    "transform": {"x": 0.0, "y": -0.65},
+                    "flip": {"vertical": False, "horizontal": False},
+                    "alpha": 1.0
+                },
+                "sub_type": 0,
+                "caption_template_info": {
+                    "category_id": "",
+                    "category_name": "",
+                    "effect_id": "",
+                    "is_new": False,
+                    "resource_id": ""
+                }
+            }
+        else:
+            # === CHỨC NĂNG 2: VĂN BẢN ĐỘC LẬP (KHÔNG CÓ "Áp dụng cho tất cả") ===
+            text_material = {
+                "add_type": 0,
+                "alignment": 1,
+                "base_content": content_json_str,
+                "border_alpha": 1.0,
+                "border_color": "#000000",
+                "border_width": 0.0,
+                "caption_template_info": {
+                    "category_id": "",
+                    "category_name": "",
+                    "effect_id": "",
+                    "is_new": False,
+                    "path": "",
+                    "request_id": "",
+                    "resource_id": "",
+                    "resource_name": "",
+                    "third_resource_id": ""
+                },
+                "check_flag": 7,
+                "combo_info": {"text_templates": []},
+                "content": content_json_str,
+                "font_category_id": "",
+                "font_category_name": "",
+                "font_id": "",
+                "font_name": "",
+                "font_path": font_path,
+                "font_resource_id": "",
+                "font_size": 15.0,
+                "font_title": "none",
+                "font_url": "",
+                "fonts": [],
+                "global_alpha": 1.0,
+                "group_id": "",
+                "has_shadow": False,
+                "id": text_material_id,
+                "initial_scale": 1.0,
+                "is_rich_text": False,
+                "line_feed": 1,
+                "line_spacing": 0.02,
+                "name": "",
+                "operation_type": 0,
+                "recognize_model": "",
+                "recognize_task_id": "",
+                "recognize_text": text_content_wrapped,
+                "recognize_type": 0,
+                "style_name": "",
+                "sub_type": 0,
+                "text_alpha": 1.0,
+                "text_color": "#FFFFFF",
+                "text_size": 30,
+                "type": "text",
+                "typesetting": 0,
+                "use_effect_default_color": False
+            }
+            
+            track_segment = {
+                "id": segment_uuid,
+                "material_id": text_material_id,
+                "target_timerange": {
+                    "duration": duration_us,
+                    "start": start_us
+                },
+                "source_timerange": None,
+                "render_index": 14000 + i,
+                "clip": {
+                    "scale": {"x": 1.0, "y": 1.0},
+                    "rotation": 0.0,
+                    "transform": {"x": 0.0, "y": -0.65},
+                    "flip": {"vertical": False, "horizontal": False},
+                    "alpha": 1.0
+                },
+                "sub_type": 0,
+                "caption_template_info": {
+                    "category_id": "",
+                    "category_name": "",
+                    "effect_id": "",
+                    "is_new": False,
+                    "resource_id": ""
+                }
+            }
         
         if i < preview_limit:
             log_callback(f"  [Preview Segment {i+1}] {start_sec:.2f}s -> {end_sec:.2f}s: \"{text_content}\"")
@@ -605,7 +828,7 @@ class CapCutAudioToTextApp(tk.Tk):
         # Biến lưu trữ dữ liệu từ cấu hình hoặc giá trị mặc định
         self.var_drafts_dir = tk.StringVar(value=self.config.get("drafts_dir", ""))
         self.var_language = tk.StringVar(value=self.config.get("language", "Tự động nhận diện"))
-        self.var_model = tk.StringVar(value=self.config.get("model", "base"))
+        self.var_model = tk.StringVar(value=self.config.get("model", "small"))
         self.var_dry_run = tk.BooleanVar(value=self.config.get("dry_run", False))
         self.var_max_words = tk.IntVar(value=self.config.get("max_words", 13))
         
@@ -795,11 +1018,12 @@ class CapCutAudioToTextApp(tk.Tk):
         self.txt_log.configure(state=tk.DISABLED)
 
     def _load_config(self):
-        config_path = "config.json"
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        config_path = os.path.join(script_dir, "config.json")
         default_config = {
-            "drafts_dir": "",
+            "drafts_dir": get_default_drafts_dir(),
             "language": "Tự động nhận diện",
-            "model": "base",
+            "model": "small",
             "dry_run": False,
             "max_words": 13
         }
@@ -810,10 +1034,14 @@ class CapCutAudioToTextApp(tk.Tk):
                     default_config.update(saved)
             except:
                 pass
+        # Nếu drafts_dir trong config đang rỗng, thử dò tìm tự động
+        if not default_config.get("drafts_dir"):
+            default_config["drafts_dir"] = get_default_drafts_dir()
         return default_config
 
     def _save_config(self):
-        config_path = "config.json"
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        config_path = os.path.join(script_dir, "config.json")
         try:
             config_data = {
                 "drafts_dir": self.var_drafts_dir.get(),

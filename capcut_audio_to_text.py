@@ -474,7 +474,7 @@ def insert_text_into_draft(project_path, segments, dry_run, log_callback, timeli
         text_material_id = str(uuid.uuid4()).upper()
         segment_uuid = str(uuid.uuid4()).upper()
         
-        # Cấu trúc nội dung JSON-in-JSON chuẩn của CapCut
+        # Cấu trúc nội dung JSON-in-JSON chuẩn của CapCut PC 9.x
         content_obj = {
             "styles": [
                 {
@@ -483,7 +483,6 @@ def insert_text_into_draft(project_path, segments, dry_run, log_callback, timeli
                         "content": {
                             "render_type": "solid",
                             "solid": {
-                                "alpha": 1.0,
                                 "color": [1.0, 1.0, 1.0]
                             }
                         }
@@ -493,60 +492,179 @@ def insert_text_into_draft(project_path, segments, dry_run, log_callback, timeli
                         "path": font_path
                     },
                     "range": [0, len(text_content_wrapped)],
-                    "size": 7.0
+                    "size": 15.0,
+                    "useLetterColor": True
                 }
             ],
             "text": text_content_wrapped
         }
         content_json_str = json.dumps(content_obj, ensure_ascii=False)
         
-        # Cấu trúc subtitle material chuẩn của CapCut
-        text_material = {
-            "id": text_material_id,
-            "type": "subtitle" if group_subtitles else "text",  # Loại là subtitle để nhận diện đúng khung hình và chức năng
-            "name": "",
-            "recognize_text": text_content_wrapped,
-            "content": content_json_str,
-            "base_content": content_json_str,
-            "global_alpha": 1.0,
-            "font_size": 7.0,
-            "font_path": font_path,
-            "alignment": 1,
-            "style_name": "",
-            "text_color": "#FFFFFF",
-            "text_alpha": 1.0,
-            "sub_type": 0,
-            "group_id": shared_group_id, # Mã nhóm liên kết các phụ đề
-            "add_type": 1,
-            "recognize_type": 0
-        }
-        
-        # Tạo segment liên kết trong track
-        track_segment = {
-            "id": segment_uuid,
-            "material_id": text_material_id,
-            "target_timerange": {
-                "duration": duration_us,
-                "start": start_us
-            },
-            "source_timerange": None,
-            "render_index": 14000 + i,
-            "clip": {
-                "scale": {"x": 1.0, "y": 1.0},
-                "rotation": 0.0,
-                "transform": {"x": 0.0, "y": -0.73}, # Tọa độ chuẩn ở đáy màn hình
-                "flip": {"vertical": False, "horizontal": False},
-                "alpha": 1.0
-            },
-            "sub_type": 0,
-            "caption_template_info": {
-                "category_id": "",
-                "category_name": "",
-                "effect_id": "",
-                "is_new": False,
-                "resource_id": ""
+        if group_subtitles:
+            # === CHỨC NĂNG 1: PHỤ ĐỀ (CÓ nút "Áp dụng cho tất cả" trong CapCut) ===
+            text_material = {
+                "add_type": 1,
+                "alignment": 1,
+                "base_content": content_json_str,
+                "border_alpha": 1.0,
+                "border_color": "#000000",
+                "border_width": 0.0,
+                "caption_template_info": {
+                    "category_id": "",
+                    "category_name": "",
+                    "effect_id": "",
+                    "is_new": False,
+                    "path": "",
+                    "request_id": "",
+                    "resource_id": "",
+                    "resource_name": "",
+                    "third_resource_id": ""
+                },
+                "check_flag": 7,
+                "combo_info": {"text_templates": []},
+                "content": content_json_str,
+                "font_category_id": "",
+                "font_category_name": "",
+                "font_id": "",
+                "font_name": "",
+                "font_path": font_path,
+                "font_resource_id": "",
+                "font_size": 15.0,
+                "font_title": "none",
+                "font_url": "",
+                "fonts": [],
+                "global_alpha": 1.0,
+                "group_id": shared_group_id,
+                "has_shadow": False,
+                "id": text_material_id,
+                "initial_scale": 1.0,
+                "is_rich_text": False,
+                "line_feed": 1,
+                "line_spacing": 0.02,
+                "name": "",
+                "operation_type": 0,
+                "recognize_model": "",
+                "recognize_task_id": "",
+                "recognize_text": text_content_wrapped,
+                "recognize_type": 0,
+                "style_name": "",
+                "sub_type": 0,
+                "subtitle_id": text_material_id,
+                "text_alpha": 1.0,
+                "text_color": "#FFFFFF",
+                "text_size": 30,
+                "type": "subtitle",
+                "typesetting": 0,
+                "use_effect_default_color": False
             }
-        }
+            
+            track_segment = {
+                "id": segment_uuid,
+                "material_id": text_material_id,
+                "target_timerange": {
+                    "duration": duration_us,
+                    "start": start_us
+                },
+                "source_timerange": None,
+                "render_index": 14000 + i,
+                "clip": {
+                    "scale": {"x": 1.0, "y": 1.0},
+                    "rotation": 0.0,
+                    "transform": {"x": 0.0, "y": -0.65},
+                    "flip": {"vertical": False, "horizontal": False},
+                    "alpha": 1.0
+                },
+                "sub_type": 0,
+                "caption_template_info": {
+                    "category_id": "",
+                    "category_name": "",
+                    "effect_id": "",
+                    "is_new": False,
+                    "resource_id": ""
+                }
+            }
+        else:
+            # === CHỨC NĂNG 2: VĂN BẢN ĐỘC LẬP (KHÔNG CÓ "Áp dụng cho tất cả") ===
+            text_material = {
+                "add_type": 0,
+                "alignment": 1,
+                "base_content": content_json_str,
+                "border_alpha": 1.0,
+                "border_color": "#000000",
+                "border_width": 0.0,
+                "caption_template_info": {
+                    "category_id": "",
+                    "category_name": "",
+                    "effect_id": "",
+                    "is_new": False,
+                    "path": "",
+                    "request_id": "",
+                    "resource_id": "",
+                    "resource_name": "",
+                    "third_resource_id": ""
+                },
+                "check_flag": 7,
+                "combo_info": {"text_templates": []},
+                "content": content_json_str,
+                "font_category_id": "",
+                "font_category_name": "",
+                "font_id": "",
+                "font_name": "",
+                "font_path": font_path,
+                "font_resource_id": "",
+                "font_size": 15.0,
+                "font_title": "none",
+                "font_url": "",
+                "fonts": [],
+                "global_alpha": 1.0,
+                "group_id": "",
+                "has_shadow": False,
+                "id": text_material_id,
+                "initial_scale": 1.0,
+                "is_rich_text": False,
+                "line_feed": 1,
+                "line_spacing": 0.02,
+                "name": "",
+                "operation_type": 0,
+                "recognize_model": "",
+                "recognize_task_id": "",
+                "recognize_text": text_content_wrapped,
+                "recognize_type": 0,
+                "style_name": "",
+                "sub_type": 0,
+                "text_alpha": 1.0,
+                "text_color": "#FFFFFF",
+                "text_size": 30,
+                "type": "text",
+                "typesetting": 0,
+                "use_effect_default_color": False
+            }
+            
+            track_segment = {
+                "id": segment_uuid,
+                "material_id": text_material_id,
+                "target_timerange": {
+                    "duration": duration_us,
+                    "start": start_us
+                },
+                "source_timerange": None,
+                "render_index": 14000 + i,
+                "clip": {
+                    "scale": {"x": 1.0, "y": 1.0},
+                    "rotation": 0.0,
+                    "transform": {"x": 0.0, "y": -0.65},
+                    "flip": {"vertical": False, "horizontal": False},
+                    "alpha": 1.0
+                },
+                "sub_type": 0,
+                "caption_template_info": {
+                    "category_id": "",
+                    "category_name": "",
+                    "effect_id": "",
+                    "is_new": False,
+                    "resource_id": ""
+                }
+            }
         
         if i < preview_limit:
             log_callback(f"  [Preview Segment {i+1}] {start_sec:.2f}s -> {end_sec:.2f}s: \"{text_content}\"")

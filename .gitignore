@@ -5,3 +5,5 @@ config.json
 *.pt
 .cache/
 CapCut_STT_Tool.rar
+*.exe
+ffmpeg.exe

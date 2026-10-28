@@ -1,0 +1,37 @@
+================================================================================
+          HƯỚNG DẪN CÀI ĐẶT & SỬ DỤNG - CAPCUT AUDIO TO TEXT TOOL
+================================================================================
+
+Công cụ tự động chuyển đổi âm thanh / giọng nói thành văn bản phụ đề (Auto Subtitle)
+và chèn trực tiếp vào dự án CapCut PC bằng AI Whisper (chạy offline).
+
+--------------------------------------------------------------------------------
+YÊU CẦU TIÊN QUYẾT TRÊN MÁY TÍNH:
+--------------------------------------------------------------------------------
+1. Cài đặt Python 3 (Khuyến nghị bản 3.9 - 3.12):
+   - Link tải chính thức: https://www.python.org/downloads/
+   - [LƯU Ý RẤT QUAN TRỌNG]: Khi bật file cài đặt Python lên, ở cửa sổ đầu tiên, 
+     hãy TÍCH CHỌN VÀO Ô: "[x] Add python.exe to PATH" rồi mới bấm Install Now.
+
+--------------------------------------------------------------------------------
+CÁC BƯỚC CÀI ĐẶT & KHỞI CHẠY:
+--------------------------------------------------------------------------------
+Bước 1: Cài đặt thư viện tự động
+   - Nhấp đúp chuột vào file: "install.bat"
+   - Hệ thống sẽ tự động cài đặt OpenAI Whisper và tải duy nhất model 'small' (~460MB).
+   - Chờ đến khi xuất hiện thông báo "CÀI ĐẶT HOÀN TẤT THÀNH CÔNG!".
+
+Bước 2: Mở phần mềm
+   - Nhấp đúp chuột vào file: "run.bat" để khởi chạy giao diện phần mềm.
+
+--------------------------------------------------------------------------------
+HƯỚNG DẪN SỬ DỤNG TRONG GIAO DIỆN:
+--------------------------------------------------------------------------------
+1. Chọn Thư mục Drafts CapCut:
+   - Tool sẽ tự động tìm kiếm thư mục dự án CapCut của bạn. 
+   - Nếu bạn lưu project ở ổ đĩa khác, nhấn nút "Browse..." để trỏ đến.
+2. Chọn dự án cần tạo phụ đề trong danh sách hiển thị bên phải.
+3. Model mặc định là 'small' (cho độ chính xác cao và tốc độ tốt).
+4. Nhấn nút "CHUYỂN ĐỔI VOICE -> TEXT".
+5. Mở lại CapCut trên máy để kiểm tra kết quả phụ đề đã được tự động thêm vào timeline!
+================================================================================
