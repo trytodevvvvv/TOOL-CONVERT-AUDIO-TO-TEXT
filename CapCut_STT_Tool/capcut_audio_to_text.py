@@ -14,6 +14,18 @@ import urllib.error
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
+# Kích hoạt Per-Monitor High-DPI Awareness cho Windows
+# Giúp phông chữ, bảng biểu và viền bo hiển thị sắc nét pixel-perfect, loại bỏ hoàn toàn mờ nhòe/giật pixel
+try:
+    import ctypes
+    ctypes.windll.shcore.SetProcessDpiAwareness(1)
+except Exception:
+    try:
+        import ctypes
+        ctypes.windll.user32.SetProcessDPIAware()
+    except Exception:
+        pass
+
 # ==============================================================================
 # PHẦN 1: THIẾT LẬP MÔI TRƯỜNG & HỆ THỐNG
 # ==============================================================================
@@ -711,21 +723,20 @@ class CapCutBatchStudioApp(tk.Tk):
         self.var_colab_url = tk.StringVar(value=self.config.get("colab_url", ""))
         self.var_colab_status = tk.StringVar(value="• Chưa kết nối Colab")
         self.var_drafts_dir = tk.StringVar(value=self.config.get("drafts_dir", ""))
-        self.var_language = tk.StringVar(value=self.config.get("language", "Tiếng Việt (vi)"))
+        self.var_language = tk.StringVar(value=self.config.get("language", "Tự động nhận diện"))
         self.var_max_words = tk.IntVar(value=self.config.get("max_words", 13))
         self.var_group_sub = tk.BooleanVar(value=self.config.get("group_subtitles", True))
-        self.var_auto_export_srt = tk.BooleanVar(value=self.config.get("auto_export_srt", True))
-        self.var_dry_run = tk.BooleanVar(value=False)
         self.var_output_dir = tk.StringVar(value=self.config.get("output_dir", ""))
         
-        # Danh sách hàng đợi
+        # Danh sách hàng đợi dự án CapCut
+        # Mỗi item: {"id": str, "name": str, "path": str, "status": str}
         self.queue_items = []
         self.stop_event = threading.Event()
         self.is_processing = False
         
         self.lang_map = {
-            "Tiếng Việt (vi)": "vi",
             "Tự động nhận diện": None,
+            "Tiếng Việt (vi)": "vi",
             "Tiếng Anh (en)": "en",
             "Tiếng Trung (zh)": "zh",
             "Tiếng Hàn (ko)": "ko",
@@ -739,29 +750,28 @@ class CapCutBatchStudioApp(tk.Tk):
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         
         if self.var_drafts_dir.get():
-            self.after(500, self._refresh_drafts_list)
+            self.after(300, self._refresh_drafts_list)
         if self.var_colab_url.get():
-            self.after(1000, self._test_colab_connection)
+            self.after(800, self._test_colab_connection)
 
     def _center_window(self):
         """
-        Tự động tính toán kích thước và tọa độ để cửa sổ luôn nằm ở chính giữa màn hình Windows,
-        tương thích hoàn hảo với mọi độ phân giải và tỉ lệ Windows Display Scaling (125%/150%).
+        Tự động tính toán kích thước Studio và tọa độ để cửa sổ luôn nằm ở chính giữa màn hình Windows,
+        tương thích hoàn hảo với mọi độ phân giải và tỉ lệ Windows Display Scaling.
         """
         self.update_idletasks()
         screen_w = self.winfo_screenwidth()
         screen_h = self.winfo_screenheight()
         
-        # Tính kích thước tối ưu (vừa vặn, không bị tràn thanh Taskbar)
-        win_w = min(1200, int(screen_w * 0.92))
-        win_h = min(700, int(screen_h * 0.86))
+        # Studio Size: ~1440 x 950 px trên Full HD, hoặc ~95% chiều rộng & ~94% chiều cao màn hình khả dụng
+        win_w = min(1440, int(screen_w * 0.95))
+        win_h = min(950, int((screen_h - 45) * 0.94))
         
-        # Căn giữa theo X và Y (đã trừ hao 45px cho thanh Taskbar phía dưới)
         x = max(0, (screen_w - win_w) // 2)
-        y = max(10, (screen_h - win_h - 45) // 2)
+        y = max(15, (screen_h - win_h - 45) // 2)
         
         self.geometry(f"{win_w}x{win_h}+{x}+{y}")
-        self.minsize(960, 560)
+        self.minsize(1050, 680)
 
     def _init_styles(self):
         self.style = ttk.Style(self)
@@ -772,25 +782,52 @@ class CapCutBatchStudioApp(tk.Tk):
                              background=self.bg_card_inner, 
                              foreground=self.fg_main, 
                              fieldbackground=self.bg_card_inner,
-                             rowheight=26,
+                             rowheight=28,
                              font=("Segoe UI", 9))
-        self.style.map("Studio.Treeview", background=[("selected", self.accent_blue)], foreground=[("selected", "#FFFFFF")])
+        self.style.map("Studio.Treeview", 
+                       background=[("selected", self.accent_blue)], 
+                       foreground=[("selected", "#FFFFFF")])
         self.style.configure("Studio.Treeview.Heading", 
                              background=self.btn_bg, 
                              foreground=self.accent_cyan, 
                              font=("Segoe UI", 9, "bold"),
                              borderwidth=1)
+                             
+        # Cấu hình TCombobox đồng bộ Dark Theme cao cấp
+        self.style.configure("TCombobox", 
+                             fieldbackground=self.bg_card_inner, 
+                             background=self.btn_bg, 
+                             foreground=self.fg_main, 
+                             arrowcolor=self.accent_cyan,
+                             darkcolor=self.bg_card, 
+                             lightcolor=self.bg_card)
+        self.style.map("TCombobox", 
+                       fieldbackground=[("readonly", self.bg_card_inner)], 
+                       foreground=[("readonly", self.fg_main)],
+                       selectbackground=[("readonly", self.accent_blue)],
+                       selectforeground=[("readonly", "#FFFFFF")])
+        
+        # Cấu hình Dropdown Listbox của Combobox
+        self.option_add("*TCombobox*Listbox.background", self.bg_card_inner)
+        self.option_add("*TCombobox*Listbox.foreground", self.fg_main)
+        self.option_add("*TCombobox*Listbox.selectBackground", self.accent_blue)
+        self.option_add("*TCombobox*Listbox.selectForeground", "#FFFFFF")
+        self.option_add("*TCombobox*Listbox.font", ("Segoe UI", 9))
+
+    def _bind_hover(self, btn, normal_bg, hover_bg):
+        btn.bind("<Enter>", lambda e: btn.configure(bg=hover_bg) if str(btn["state"]) != "disabled" else None)
+        btn.bind("<Leave>", lambda e: btn.configure(bg=normal_bg) if str(btn["state"]) != "disabled" else None)
 
     def _create_widgets(self):
         # 1. TOP HEADER & COLAB BAR (Thanh công cụ kết nối & Copy Code)
-        top_bar = tk.Frame(self, bg=self.bg_card, bd=1, relief=tk.SOLID, padx=12, pady=6)
-        top_bar.pack(fill=tk.X, padx=12, pady=(6, 4))
+        top_bar = tk.Frame(self, bg=self.bg_card, bd=1, relief=tk.SOLID, padx=14, pady=8)
+        top_bar.pack(fill=tk.X, padx=12, pady=(8, 6))
         
         # Hàng 1: Tiêu đề
         row_title = tk.Frame(top_bar, bg=self.bg_card)
-        row_title.pack(fill=tk.X, pady=(0, 5))
+        row_title.pack(fill=tk.X, pady=(0, 6))
         
-        tk.Label(row_title, text="🎙️ CAPCUT AUDIO TO TEXT", font=("Segoe UI", 14, "bold"), fg=self.accent_cyan, bg=self.bg_card).pack(side=tk.LEFT)
+        tk.Label(row_title, text="🎙️ CAPCUT AUDIO TO TEXT", font=("Segoe UI", 15, "bold"), fg=self.accent_cyan, bg=self.bg_card).pack(side=tk.LEFT)
         tk.Label(row_title, text="• GOOGLE COLAB TESLA T4 16GB (BATCH STUDIO)", font=("Segoe UI", 10, "bold"), fg=self.accent_green, bg=self.bg_card).pack(side=tk.LEFT, padx=(8, 0))
         
         # Hàng 2: Nhập Link Colab, Kết nối, Copy Code, Mở Colab
@@ -801,79 +838,77 @@ class CapCutBatchStudioApp(tk.Tk):
         
         self.entry_colab = tk.Entry(row_conn, textvariable=self.var_colab_url, font=("Consolas", 10), bg=self.bg_card_inner, fg="#FFFFFF",
                                     insertbackground="#FFFFFF", bd=1, relief=tk.SOLID)
-        self.entry_colab.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 8), ipady=2)
+        self.entry_colab.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 8), ipady=3)
         
         self.btn_connect = tk.Button(row_conn, text="🔗 Kết nối", font=("Segoe UI", 9, "bold"), bg=self.accent_cyan, fg="#0F172A",
-                                     activebackground="#7dd3fc", activeforeground="#0F172A", bd=0, padx=12, pady=2, cursor="hand2", command=self._test_colab_connection)
+                                     activebackground="#7dd3fc", activeforeground="#0F172A", bd=0, padx=12, pady=3, cursor="hand2", command=self._test_colab_connection)
         self.btn_connect.pack(side=tk.LEFT, padx=(0, 8))
+        self._bind_hover(self.btn_connect, self.accent_cyan, "#7dd3fc")
         
         self.lbl_colab_status = tk.Label(row_conn, textvariable=self.var_colab_status, font=("Segoe UI", 9, "bold"), fg=self.fg_dim, bg=self.bg_card)
         self.lbl_colab_status.pack(side=tk.LEFT, padx=(0, 10))
         
         # Nút 1-Click Copy Code Colab
         self.btn_copy_code = tk.Button(row_conn, text="📋 Copy Code Colab", font=("Segoe UI", 9, "bold"), bg="#1E1B4B", fg=self.accent_cyan,
-                                       activebackground="#312E81", activeforeground="#FFFFFF", bd=1, relief=tk.SOLID, padx=10, pady=2,
+                                       activebackground="#312E81", activeforeground="#FFFFFF", bd=1, relief=tk.SOLID, padx=12, pady=3,
                                        cursor="hand2", command=self._quick_copy_colab_code)
         self.btn_copy_code.pack(side=tk.RIGHT, padx=(4, 0))
+        self._bind_hover(self.btn_copy_code, "#1E1B4B", "#312E81")
         
         btn_open_colab = tk.Button(row_conn, text="⚡ Mở Colab", font=("Segoe UI", 9), bg=self.btn_bg, fg="#FBBF24",
-                                   activebackground="#475569", activeforeground="#FFFFFF", bd=0, padx=9, pady=2,
+                                   activebackground="#475569", activeforeground="#FFFFFF", bd=0, padx=10, pady=3,
                                    cursor="hand2", command=lambda: webbrowser.open("https://colab.research.google.com/"))
         btn_open_colab.pack(side=tk.RIGHT)
+        self._bind_hover(btn_open_colab, self.btn_bg, "#475569")
 
-        # 2. KHU VỰC LÀM VIỆC CHÍNH (2 CỘT)
-        work_paned = tk.PanedWindow(self, orient=tk.HORIZONTAL, bg=self.bg_main, bd=0, sashwidth=6, sashrelief=tk.FLAT)
-        work_paned.pack(fill=tk.BOTH, expand=True, padx=12, pady=(4, 8))
+        # 2. KHU VỰC LÀM VIỆC CHÍNH (BỐ CỤC 2 CỘT GRID VỮNG CHẮC)
+        work_container = tk.Frame(self, bg=self.bg_main)
+        work_container.pack(fill=tk.BOTH, expand=True, padx=12, pady=(4, 8))
+        work_container.columnconfigure(0, weight=1, uniform="work_col")
+        work_container.columnconfigure(1, weight=1, uniform="work_col")
+        work_container.rowconfigure(0, weight=1)
         
         # -------------------------------------------------------------
-        # CỘT TRÁI: HÀNG ĐỢI (BATCH QUEUE) & TÙY CHỌN
+        # CỘT TRÁI: HÀNG ĐỢI DỰ ÁN CAPCUT & CẤU HÌNH PHỤ ĐỀ
         # -------------------------------------------------------------
-        left_frame = tk.Frame(work_paned, bg=self.bg_main)
-        work_paned.add(left_frame, minsize=520)
+        left_frame = tk.Frame(work_container, bg=self.bg_main)
+        left_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
         
-        # Card 1: Hàng đợi âm thanh / dự án
-        card_queue = tk.LabelFrame(left_frame, text="1. Hàng Đợi Xử Lý Hàng Loạt (Batch Queue)", bg=self.bg_card, fg=self.accent_cyan,
+        # Card 1: Hàng đợi dự án CapCut
+        card_queue = tk.LabelFrame(left_frame, text="1. Hàng Đợi Dự Án CapCut Cần Xử Lý (Batch Queue)", bg=self.bg_card, fg=self.accent_cyan,
                                    font=("Segoe UI", 10, "bold"), padx=10, pady=6, bd=1, relief=tk.SOLID)
         card_queue.pack(fill=tk.BOTH, expand=True, pady=(0, 6))
         
         # Toolbar của hàng đợi
         q_toolbar = tk.Frame(card_queue, bg=self.bg_card)
-        q_toolbar.pack(fill=tk.X, pady=(0, 4))
+        q_toolbar.pack(fill=tk.X, pady=(0, 5))
         
-        btn_add_files = tk.Button(q_toolbar, text="➕ Thêm Tệp", font=("Segoe UI", 8, "bold"), bg=self.accent_blue, fg="#FFFFFF",
-                                  activebackground="#1d4ed8", bd=0, padx=8, pady=2, cursor="hand2", command=self._add_audio_files)
-        btn_add_files.pack(side=tk.LEFT, padx=(0, 4))
+        btn_remove_item = tk.Button(q_toolbar, text="🗑️ Xóa Mục Chọn", font=("Segoe UI", 8, "bold"), bg=self.btn_bg, fg=self.fg_main,
+                                    activebackground=self.accent_red, bd=0, padx=9, pady=3, cursor="hand2", command=self._remove_queue_item)
+        btn_remove_item.pack(side=tk.LEFT, padx=(0, 6))
+        self._bind_hover(btn_remove_item, self.btn_bg, self.accent_red)
         
-        btn_add_folder = tk.Button(q_toolbar, text="📂 Thư Mục", font=("Segoe UI", 8, "bold"), bg=self.btn_bg, fg=self.fg_main,
-                                   activebackground="#475569", bd=0, padx=8, pady=2, cursor="hand2", command=self._add_audio_folder)
-        btn_add_folder.pack(side=tk.LEFT, padx=(0, 4))
-        
-        btn_remove_item = tk.Button(q_toolbar, text="🗑️ Xóa", font=("Segoe UI", 8), bg=self.btn_bg, fg=self.fg_main,
-                                    activebackground=self.accent_red, bd=0, padx=7, pady=2, cursor="hand2", command=self._remove_queue_item)
-        btn_remove_item.pack(side=tk.LEFT, padx=(0, 4))
-        
-        btn_clear_all = tk.Button(q_toolbar, text="🔄 Xóa Hết", font=("Segoe UI", 8), bg=self.btn_bg, fg=self.fg_main,
-                                  activebackground="#7f1d1d", bd=0, padx=7, pady=2, cursor="hand2", command=self._clear_queue)
+        btn_clear_all = tk.Button(q_toolbar, text="🔄 Xóa Hết Hàng Đợi", font=("Segoe UI", 8), bg=self.btn_bg, fg=self.fg_main,
+                                  activebackground="#7f1d1d", bd=0, padx=9, pady=3, cursor="hand2", command=self._clear_queue)
         btn_clear_all.pack(side=tk.LEFT)
+        self._bind_hover(btn_clear_all, self.btn_bg, "#7f1d1d")
         
-        self.lbl_queue_count = tk.Label(q_toolbar, text="0 mục", font=("Segoe UI", 8, "bold"), bg="#1E1B4B", fg=self.accent_cyan, padx=8, pady=2, bd=1, relief=tk.SOLID)
+        self.lbl_queue_count = tk.Label(q_toolbar, text="0 dự án", font=("Segoe UI", 8, "bold"), bg="#1E1B4B", fg=self.accent_cyan, padx=10, pady=2, bd=1, relief=tk.SOLID)
         self.lbl_queue_count.pack(side=tk.RIGHT)
         
-        # Bảng Treeview của hàng đợi
+        # Bảng Treeview của hàng đợi (Cột: #, Tên Dự Án CapCut, Trạng Thái)
         tree_q_container = tk.Frame(card_queue, bg=self.bg_card_inner, bd=1, relief=tk.SOLID)
         tree_q_container.pack(fill=tk.BOTH, expand=True, pady=(0, 4))
         
-        q_cols = ("#", "name", "type", "status")
-        self.tree_queue = ttk.Treeview(tree_q_container, columns=q_cols, show="headings", style="Studio.Treeview", selectmode="extended", height=6)
+        q_cols = ("#", "name", "status")
+        self.tree_queue = ttk.Treeview(tree_q_container, columns=q_cols, show="headings", style="Studio.Treeview", selectmode="extended", height=10)
         self.tree_queue.heading("#", text="#")
-        self.tree_queue.heading("name", text="Tên Mục (Tệp Media / Dự Án CapCut)")
-        self.tree_queue.heading("type", text="Phân Loại")
-        self.tree_queue.heading("status", text="Trạng Thái")
+        self.tree_queue.heading("name", text="Tên Dự Án CapCut (Draft Name)")
+        self.tree_queue.heading("status", text="Trạng Thái Xử Lý")
         
-        self.tree_queue.column("#", width=32, anchor=tk.CENTER)
-        self.tree_queue.column("name", width=260, anchor=tk.W)
-        self.tree_queue.column("type", width=95, anchor=tk.CENTER)
-        self.tree_queue.column("status", width=140, anchor=tk.W)
+        self.tree_queue.column("#", width=38, anchor=tk.CENTER)
+        self.tree_queue.column("name", width=360, anchor=tk.W)
+        self.tree_queue.column("status", width=180, anchor=tk.W)
         
         q_scroll = ttk.Scrollbar(tree_q_container, orient=tk.VERTICAL, command=self.tree_queue.yview)
         self.tree_queue.configure(yscrollcommand=q_scroll.set)
@@ -885,18 +920,9 @@ class CapCutBatchStudioApp(tk.Tk):
         self.tree_queue.tag_configure("completed", foreground=self.accent_green)
         self.tree_queue.tag_configure("failed", foreground=self.accent_red)
         
-        # Tùy chọn xuất file phụ đề .SRT cho tệp media rời
-        opt_box = tk.Frame(card_queue, bg=self.bg_card)
-        opt_box.pack(fill=tk.X, pady=(2, 0))
-        
-        chk_srt = tk.Checkbutton(opt_box, text="☑️ Tự động xuất file phụ đề .SRT và .TXT (cho các tệp media rời)", 
-                                 variable=self.var_auto_export_srt, font=("Segoe UI", 9, "bold"), fg=self.accent_cyan,
-                                 bg=self.bg_card, activebackground=self.bg_card, selectcolor=self.bg_card_inner)
-        chk_srt.pack(anchor=tk.W)
-        
         # Card 2: Cấu hình phụ đề & Master Action
         card_sub_opts = tk.LabelFrame(left_frame, text="2. Cấu hình Phụ Đề & Hành Động", bg=self.bg_card, fg=self.accent_cyan,
-                                      font=("Segoe UI", 10, "bold"), padx=10, pady=5, bd=1, relief=tk.SOLID)
+                                      font=("Segoe UI", 10, "bold"), padx=10, pady=6, bd=1, relief=tk.SOLID)
         card_sub_opts.pack(fill=tk.X)
         
         row_cfg = tk.Frame(card_sub_opts, bg=self.bg_card)
@@ -912,7 +938,7 @@ class CapCutBatchStudioApp(tk.Tk):
         
         # Chế độ phụ đề CapCut
         row_mode = tk.Frame(card_sub_opts, bg=self.bg_card)
-        row_mode.pack(fill=tk.X, pady=(1, 4))
+        row_mode.pack(fill=tk.X, pady=(2, 5))
         
         tk.Label(row_mode, text="Kiểu phụ đề CapCut:", font=("Segoe UI", 9, "bold"), fg=self.fg_main, bg=self.bg_card).pack(side=tk.LEFT, padx=(0, 10))
         r_group = tk.Radiobutton(row_mode, text="Nhóm Sub (Áp dụng cho tất cả)", variable=self.var_group_sub, value=True,
@@ -925,23 +951,25 @@ class CapCutBatchStudioApp(tk.Tk):
         
         # Nút Master hành động chạy hàng đợi
         row_action = tk.Frame(card_sub_opts, bg=self.bg_card)
-        row_action.pack(fill=tk.X, pady=(2, 2))
+        row_action.pack(fill=tk.X, pady=(4, 2))
         
         self.btn_run_batch = tk.Button(row_action, text="⚡ BẮT ĐẦU CHẠY HÀNG CHỜ (BATCH PROCESS)", font=("Segoe UI", 11, "bold"),
                                        bg=self.accent_cyan, fg="#0F172A", activebackground="#7dd3fc", activeforeground="#0F172A",
-                                       bd=0, pady=7, cursor="hand2", command=self._start_batch_pipeline)
+                                       bd=0, pady=8, cursor="hand2", command=self._start_batch_pipeline)
         self.btn_run_batch.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 6))
+        self._bind_hover(self.btn_run_batch, self.accent_cyan, "#7dd3fc")
         
         self.btn_stop_batch = tk.Button(row_action, text="⏹️ Dừng", font=("Segoe UI", 10, "bold"),
                                         bg=self.btn_bg, fg=self.accent_red, activebackground=self.accent_red, activeforeground="#FFFFFF",
-                                        bd=0, pady=7, width=8, cursor="hand2", state=tk.DISABLED, command=self._stop_batch_pipeline)
+                                        bd=0, pady=8, width=8, cursor="hand2", state=tk.DISABLED, command=self._stop_batch_pipeline)
         self.btn_stop_batch.pack(side=tk.RIGHT)
+        self._bind_hover(self.btn_stop_batch, self.btn_bg, self.accent_red)
 
         # -------------------------------------------------------------
         # CỘT PHẢI: DỰ ÁN CAPCUT & OUTPUT LOG
         # -------------------------------------------------------------
-        right_frame = tk.Frame(work_paned, bg=self.bg_main)
-        work_paned.add(right_frame, minsize=500)
+        right_frame = tk.Frame(work_container, bg=self.bg_main)
+        right_frame.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
         
         # Card 3: Danh sách dự án CapCut
         card_drafts = tk.LabelFrame(right_frame, text="3. Thư Mục Dự Án CapCut Trên Máy", bg=self.bg_card, fg=self.accent_cyan,
@@ -957,22 +985,24 @@ class CapCutBatchStudioApp(tk.Tk):
                                  insertbackground=self.fg_main, bd=1, relief=tk.SOLID)
         entry_draft_p.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 6), ipady=2)
         
-        btn_br_drafts = tk.Button(row_draft_p, text="Browse...", font=("Segoe UI", 8), bg=self.btn_bg, fg=self.fg_main, bd=0, padx=8, pady=2, command=self._browse_drafts_dir)
+        btn_br_drafts = tk.Button(row_draft_p, text="Browse...", font=("Segoe UI", 8), bg=self.btn_bg, fg=self.fg_main, bd=0, padx=8, pady=2, cursor="hand2", command=self._browse_drafts_dir)
         btn_br_drafts.pack(side=tk.LEFT, padx=(0, 4))
+        self._bind_hover(btn_br_drafts, self.btn_bg, "#475569")
         
-        btn_rf_drafts = tk.Button(row_draft_p, text="🔄 Làm mới", font=("Segoe UI", 8, "bold"), bg=self.btn_bg, fg=self.accent_cyan, bd=0, padx=8, pady=2, command=self._refresh_drafts_list)
+        btn_rf_drafts = tk.Button(row_draft_p, text="🔄 Làm mới", font=("Segoe UI", 8, "bold"), bg=self.btn_bg, fg=self.accent_cyan, bd=0, padx=8, pady=2, cursor="hand2", command=self._refresh_drafts_list)
         btn_rf_drafts.pack(side=tk.LEFT)
+        self._bind_hover(btn_rf_drafts, self.btn_bg, "#475569")
         
         # Treeview danh sách dự án
         tree_d_container = tk.Frame(card_drafts, bg=self.bg_card_inner, bd=1, relief=tk.SOLID)
         tree_d_container.pack(fill=tk.BOTH, expand=True, pady=(0, 4))
         
         d_cols = ("name", "status")
-        self.tree_drafts = ttk.Treeview(tree_d_container, columns=d_cols, show="headings", style="Studio.Treeview", selectmode="extended", height=6)
+        self.tree_drafts = ttk.Treeview(tree_d_container, columns=d_cols, show="headings", style="Studio.Treeview", selectmode="extended", height=10)
         self.tree_drafts.heading("name", text="Tên Dự Án CapCut (Draft Name)")
         self.tree_drafts.heading("status", text="Trạng Thái")
-        self.tree_drafts.column("name", width=280, anchor=tk.W)
-        self.tree_drafts.column("status", width=120, anchor=tk.CENTER)
+        self.tree_drafts.column("name", width=340, anchor=tk.W)
+        self.tree_drafts.column("status", width=140, anchor=tk.CENTER)
         
         d_scroll = ttk.Scrollbar(tree_d_container, orient=tk.VERTICAL, command=self.tree_drafts.yview)
         self.tree_drafts.configure(yscrollcommand=d_scroll.set)
@@ -982,8 +1012,9 @@ class CapCutBatchStudioApp(tk.Tk):
         # Nút đẩy dự án được chọn vào hàng đợi
         btn_add_project_to_queue = tk.Button(card_drafts, text="➕ ĐƯA DỰ ÁN ĐÃ CHỌN VÀO HÀNG ĐỢI (QUEUE)", font=("Segoe UI", 9, "bold"),
                                              bg=self.btn_bg, fg=self.accent_green, activebackground="#059669", activeforeground="#FFFFFF",
-                                             bd=1, relief=tk.SOLID, pady=3, cursor="hand2", command=self._add_selected_drafts_to_queue)
+                                             bd=1, relief=tk.SOLID, pady=4, cursor="hand2", command=self._add_selected_drafts_to_queue)
         btn_add_project_to_queue.pack(fill=tk.X)
+        self._bind_hover(btn_add_project_to_queue, self.btn_bg, "#065f46")
         
         # Card 4: Output Log & Progress Bar
         card_log = tk.LabelFrame(right_frame, text="4. Tiến Trình & Nhật Ký (Live Output Log)", bg=self.bg_card, fg=self.accent_cyan,
@@ -1023,11 +1054,14 @@ class CapCutBatchStudioApp(tk.Tk):
     # ==========================================================================
 
     def log(self, message):
-        timestamp = datetime.datetime.now().strftime("[%H:%M:%S]")
-        self.txt_log.configure(state=tk.NORMAL)
-        self.txt_log.insert(tk.END, f"{timestamp} {message}\n")
-        self.txt_log.see(tk.END)
-        self.txt_log.configure(state=tk.DISABLED)
+        """Thread-safe logging vào console text area"""
+        def _ui_log():
+            timestamp = datetime.datetime.now().strftime("[%H:%M:%S]")
+            self.txt_log.configure(state=tk.NORMAL)
+            self.txt_log.insert(tk.END, f"{timestamp} {message}\n")
+            self.txt_log.see(tk.END)
+            self.txt_log.configure(state=tk.DISABLED)
+        self.after(0, _ui_log)
 
     def _quick_copy_colab_code(self):
         try:
@@ -1059,39 +1093,18 @@ class CapCutBatchStudioApp(tk.Tk):
         
         def run_test():
             ok, msg = check_colab_health(url)
-            if ok:
-                self.var_colab_status.set(f"● {msg}")
-                self.lbl_colab_status.configure(fg=self.accent_green)
-                self.log(f"[KẾT NỐI COLAB THÀNH CÔNG] {msg}")
-            else:
-                self.var_colab_status.set(f"● {msg}")
-                self.lbl_colab_status.configure(fg=self.accent_red)
-                self.log(f"[LỖI KẾT NỐI COLAB] {msg}")
+            def _update_ui():
+                if ok:
+                    self.var_colab_status.set(f"● {msg}")
+                    self.lbl_colab_status.configure(fg=self.accent_green)
+                    self.log(f"[KẾT NỐI COLAB THÀNH CÔNG] {msg}")
+                else:
+                    self.var_colab_status.set(f"● {msg}")
+                    self.lbl_colab_status.configure(fg=self.accent_red)
+                    self.log(f"[LỖI KẾT NỐI COLAB] {msg}")
+            self.after(0, _update_ui)
                 
         threading.Thread(target=run_test, daemon=True).start()
-
-    def _add_audio_files(self):
-        filetypes = [
-            ("Tệp Âm Thanh & Video", "*.mp3 *.wav *.m4a *.mp4 *.flac *.aac *.mkv *.ogg"),
-            ("Tất cả tệp", "*.*")
-        ]
-        paths = filedialog.askopenfilenames(title="Chọn Tệp Âm Thanh / Video", filetypes=filetypes)
-        if paths:
-            self._insert_paths_to_queue(paths, item_type="file")
-
-    def _add_audio_folder(self):
-        folder = filedialog.askdirectory(title="Chọn Thư Mục Chứa Âm Thanh / Video")
-        if folder:
-            valid_exts = {".mp3", ".wav", ".m4a", ".mp4", ".flac", ".aac", ".mkv", ".ogg"}
-            found = []
-            for root, _, files in os.walk(folder):
-                for f in files:
-                    if os.path.splitext(f)[1].lower() in valid_exts:
-                        found.append(os.path.join(root, f))
-            if found:
-                self._insert_paths_to_queue(found, item_type="file")
-            else:
-                messagebox.showinfo("Thông báo", "Không tìm thấy tệp âm thanh/video nào trong thư mục này!")
 
     def _add_selected_drafts_to_queue(self):
         selected_ids = self.tree_drafts.selection()
@@ -1103,7 +1116,7 @@ class CapCutBatchStudioApp(tk.Tk):
         for s_id in selected_ids:
             tags = self.tree_drafts.item(s_id, "tags")
             vals = self.tree_drafts.item(s_id, "values")
-            if tags:
+            if tags and tags[0] != "scanning":
                 d_path = tags[0]
                 d_name = vals[0]
                 if not any(item["path"] == d_path for item in self.queue_items):
@@ -1111,37 +1124,15 @@ class CapCutBatchStudioApp(tk.Tk):
                     self.queue_items.append({
                         "id": item_id,
                         "name": d_name,
-                        "type": "project",
                         "path": d_path,
                         "status": "Chờ xử lý"
                     })
                     idx = len(self.queue_items)
-                    self.tree_queue.insert("", tk.END, iid=item_id, values=(idx, d_name, "Dự Án CapCut", "⏳ Chờ xử lý"), tags=("waiting",))
+                    self.tree_queue.insert("", tk.END, iid=item_id, values=(idx, d_name, "⏳ Chờ xử lý"), tags=("waiting",))
                     added += 1
                     
         self._update_queue_badge()
         self.log(f"Đã thêm {added} dự án CapCut vào hàng đợi.")
-
-    def _insert_paths_to_queue(self, paths, item_type="file"):
-        added = 0
-        for p in paths:
-            p_norm = os.path.normpath(p)
-            if not any(item["path"] == p_norm for item in self.queue_items):
-                item_id = str(uuid.uuid4())[:8]
-                f_name = os.path.basename(p_norm)
-                type_name = "Tệp Media" if item_type == "file" else "Dự Án CapCut"
-                self.queue_items.append({
-                    "id": item_id,
-                    "name": f_name,
-                    "type": item_type,
-                    "path": p_norm,
-                    "status": "Chờ xử lý"
-                })
-                idx = len(self.queue_items)
-                self.tree_queue.insert("", tk.END, iid=item_id, values=(idx, f_name, type_name, "⏳ Chờ xử lý"), tags=("waiting",))
-                added += 1
-        self._update_queue_badge()
-        self.log(f"Đã thêm {added} tệp vào hàng đợi.")
 
     def _remove_queue_item(self):
         selected_ids = self.tree_queue.selection()
@@ -1165,12 +1156,13 @@ class CapCutBatchStudioApp(tk.Tk):
     def _reindex_queue(self):
         for idx, item in enumerate(self.queue_items, start=1):
             s_id = item["id"]
-            type_name = "Dự Án CapCut" if item["type"] == "project" else "Tệp Media"
-            self.tree_queue.item(s_id, values=(idx, item["name"], type_name, self.tree_queue.item(s_id, "values")[3]))
+            cur_vals = self.tree_queue.item(s_id, "values")
+            status = cur_vals[2] if len(cur_vals) > 2 else "⏳ Chờ xử lý"
+            self.tree_queue.item(s_id, values=(idx, item["name"], status))
 
     def _update_queue_badge(self):
         count = len(self.queue_items)
-        self.lbl_queue_count.configure(text=f"{count} mục")
+        self.lbl_queue_count.configure(text=f"{count} dự án")
 
     # ==========================================================================
     # CÁC HÀM XỬ LÝ DỰ ÁN CAPCUT
@@ -1184,15 +1176,24 @@ class CapCutBatchStudioApp(tk.Tk):
             self._refresh_drafts_list()
 
     def _refresh_drafts_list(self):
-        for item in self.tree_drafts.get_children():
-            self.tree_drafts.delete(item)
         root_dir = self.var_drafts_dir.get().strip()
         if not root_dir: return
         
-        drafts = find_drafts(root_dir)
-        for d in drafts:
-            self.tree_drafts.insert("", tk.END, values=(d["name"], d["status"]), tags=(d["path"],))
-        self.log(f"Đã quét danh sách dự án CapCut: Tìm thấy {len(drafts)} dự án.")
+        for item in self.tree_drafts.get_children():
+            self.tree_drafts.delete(item)
+        self.tree_drafts.insert("", tk.END, values=("Đang quét dự án CapCut...", "Vui lòng chờ..."), tags=("scanning",))
+        
+        def _scan_worker():
+            drafts = find_drafts(root_dir)
+            def _update_tree():
+                for item in self.tree_drafts.get_children():
+                    self.tree_drafts.delete(item)
+                for d in drafts:
+                    self.tree_drafts.insert("", tk.END, values=(d["name"], d["status"]), tags=(d["path"],))
+                self.log(f"Đã quét danh sách dự án CapCut: Tìm thấy {len(drafts)} dự án.")
+            self.after(0, _update_tree)
+            
+        threading.Thread(target=_scan_worker, daemon=True).start()
 
     def _is_capcut_running(self):
         try:
@@ -1202,12 +1203,12 @@ class CapCutBatchStudioApp(tk.Tk):
         except Exception: return False
 
     # ==========================================================================
-    # BATCH QUEUE PIPELINE WORKER
+    # BATCH QUEUE PIPELINE WORKER (THREAD-SAFE)
     # ==========================================================================
 
     def _start_batch_pipeline(self):
         if not self.queue_items:
-            messagebox.showwarning("Hàng đợi trống", "Vui lòng thêm ít nhất 1 tệp hoặc dự án CapCut vào hàng đợi!")
+            messagebox.showwarning("Hàng đợi trống", "Vui lòng chọn và đưa ít nhất 1 dự án CapCut vào hàng đợi!")
             return
             
         colab_url = self.var_colab_url.get().strip()
@@ -1233,7 +1234,7 @@ class CapCutBatchStudioApp(tk.Tk):
         threading.Thread(target=self._run_batch_worker, args=(colab_url,), daemon=True).start()
 
     def _stop_batch_pipeline(self):
-        if messagebox.askyesno("Xác nhận dừng", "Bạn có chắc chắn muốn dừng hàng đợi sau khi mục hiện tại kết thúc?"):
+        if messagebox.askyesno("Xác nhận dừng", "Bạn có chắc chắn muốn dừng hàng đợi sau khi dự án hiện tại kết thúc?"):
             self.stop_event.set()
             self.log("[CẢNH BÁO] Đã nhận lệnh dừng hàng đợi...")
 
@@ -1243,14 +1244,17 @@ class CapCutBatchStudioApp(tk.Tk):
         language_code = self.lang_map.get(language_display)
         max_words = self.var_max_words.get()
         group_sub = self.var_group_sub.get()
-        auto_srt = self.var_auto_export_srt.get()
         
-        self.prog_bar["maximum"] = total_items
-        self.prog_bar["value"] = 0
+        def _safe_update(fn):
+            self.after(0, fn)
+            
+        _safe_update(lambda: [
+            self.prog_bar.configure(maximum=total_items, value=0)
+        ])
         start_batch_time = time.time()
         
         self.log("=" * 65)
-        self.log(f"KHỞI ĐỘNG XỬ LÝ HÀNG ĐỢI ({total_items} MỤC):")
+        self.log(f"KHỞI ĐỘNG XỬ LÝ HÀNG ĐỢI ({total_items} DỰ ÁN CAPCUT):")
         self.log(f"  Colab GPU: {colab_url}")
         self.log(f"  Ngôn ngữ: {language_display} | Tối đa từ/đoạn: {max_words}")
         self.log("=" * 65)
@@ -1265,28 +1269,24 @@ class CapCutBatchStudioApp(tk.Tk):
                 
             item_id = item["id"]
             name = item["name"]
-            i_type = item["type"]
             path = item["path"]
-            type_name = "Dự Án CapCut" if i_type == "project" else "Tệp Media"
             
-            # Cập nhật trạng thái item đang chạy
-            self.tree_queue.item(item_id, values=(idx, name, type_name, "⚡ Đang xử lý..."), tags=("processing",))
-            self.lbl_progress_status.configure(text=f"Đang xử lý [{idx}/{total_items}]: {name}", fg=self.accent_cyan)
+            # Cập nhật trạng thái item đang chạy (Thread-safe)
+            _safe_update(lambda i=item_id, n=name, ix=idx: [
+                self.tree_queue.item(i, values=(ix, n, "⚡ Đang xử lý..."), tags=("processing",)),
+                self.lbl_progress_status.configure(text=f"Đang xử lý [{ix}/{total_items}]: {n}", fg=self.accent_cyan)
+            ])
             
             item_start_t = time.time()
-            self.log(f"\n---> [{idx}/{total_items}] Bắt đầu: {name} ({type_name})")
+            self.log(f"\n---> [{idx}/{total_items}] Bắt đầu: {name}")
             
             try:
-                # 1. Xác định file âm thanh nguồn
-                if i_type == "project":
-                    candidates = find_audio_candidates(path)
-                    if not candidates:
-                        raise FileNotFoundError("Không tìm thấy tệp audio/video nào trên timeline của dự án này!")
-                    audio_target = candidates[0]["path"]
-                    offset_us = candidates[0]["offset_us"]
-                else:
-                    audio_target = path
-                    offset_us = 0
+                # 1. Tìm audio/video trên timeline của dự án CapCut
+                candidates = find_audio_candidates(path)
+                if not candidates:
+                    raise FileNotFoundError("Không tìm thấy tệp audio/video nào trên timeline của dự án này!")
+                audio_target = candidates[0]["path"]
+                offset_us = candidates[0]["offset_us"]
                     
                 # 2. Gửi sang Colab Large-v3
                 raw_segments = transcribe_audio_colab(colab_url, audio_target, language_code, self.log, stop_event=self.stop_event)
@@ -1294,41 +1294,43 @@ class CapCutBatchStudioApp(tk.Tk):
                 # 3. Hậu xử lý từ ghép tiếng Việt & dấu câu
                 segments = split_segments_by_words(raw_segments, max_words=max_words)
                 
-                # 4. Ghi kết quả
-                if i_type == "project":
-                    inserted = insert_text_into_draft(path, segments, dry_run=False, log_callback=self.log, timeline_offset_us=offset_us, group_subtitles=group_sub)
-                    self.log(f"  -> Đã chèn {inserted} đoạn phụ đề vào dự án CapCut!")
-                else:
-                    if auto_srt:
-                        srt_p, txt_p = export_srt_and_txt(segments, path)
-                        self.log(f"  -> Đã xuất file phụ đề: {os.path.basename(srt_p)} & {os.path.basename(txt_p)}")
-                        
+                # 4. Ghi trực tiếp vào draft_content.json của CapCut
+                inserted = insert_text_into_draft(path, segments, dry_run=False, log_callback=self.log, timeline_offset_us=offset_us, group_subtitles=group_sub)
+                self.log(f"  -> Đã chèn {inserted} đoạn phụ đề vào dự án CapCut!")
+                
                 dur_item = round(time.time() - item_start_t, 1)
-                self.tree_queue.item(item_id, values=(idx, name, type_name, f"✅ Hoàn thành ({dur_item}s)"), tags=("completed",))
+                _safe_update(lambda i=item_id, n=name, ix=idx, d=dur_item: [
+                    self.tree_queue.item(i, values=(ix, n, f"✅ Hoàn thành ({d}s)"), tags=("completed",))
+                ])
                 completed_count += 1
                 
             except Exception as e:
                 dur_item = round(time.time() - item_start_t, 1)
-                self.tree_queue.item(item_id, values=(idx, name, type_name, "❌ Thất bại"), tags=("failed",))
-                self.log(f"  [LỖI] Xử lý mục {name} thất bại: {e}")
+                _safe_update(lambda i=item_id, n=name, ix=idx: [
+                    self.tree_queue.item(i, values=(ix, n, "❌ Thất bại"), tags=("failed",))
+                ])
+                self.log(f"  [LỖI] Xử lý dự án {name} thất bại: {e}")
                 failed_count += 1
                 
-            self.prog_bar["value"] = idx
             elapsed_tot = int(time.time() - start_batch_time)
             mins, secs = elapsed_tot // 60, elapsed_tot % 60
-            self.lbl_elapsed_timer.configure(text=f"{mins:02d}:{secs:02d}")
+            _safe_update(lambda ix=idx, m=mins, s=secs: [
+                self.prog_bar.configure(value=ix),
+                self.lbl_elapsed_timer.configure(text=f"{m:02d}:{s:02d}")
+            ])
             
         total_time = round(time.time() - start_batch_time, 1)
         self.log("\n" + "=" * 65)
         self.log(f"HOÀN TẤT HÀNG ĐỢI! Thành công: {completed_count}/{total_items} | Lỗi: {failed_count} | Tổng thời gian: {total_time}s")
         self.log("=" * 65)
         
-        self.lbl_progress_status.configure(text=f"Hoàn thành ({completed_count}/{total_items} mục)", fg=self.accent_green)
-        self.btn_run_batch.configure(state=tk.NORMAL, text="⚡ BẮT ĐẦU CHẠY HÀNG CHỜ (BATCH PROCESS)")
-        self.btn_stop_batch.configure(state=tk.DISABLED)
-        self.is_processing = False
-        
-        messagebox.showinfo("Hoàn thành", f"Đã chạy xong hàng đợi!\nThành công: {completed_count}/{total_items}\nLỗi: {failed_count}\nThời gian: {total_time} giây.")
+        def _finish_ui():
+            self.lbl_progress_status.configure(text=f"Hoàn thành ({completed_count}/{total_items} dự án)", fg=self.accent_green)
+            self.btn_run_batch.configure(state=tk.NORMAL, text="⚡ BẮT ĐẦU CHẠY HÀNG CHỜ (BATCH PROCESS)")
+            self.btn_stop_batch.configure(state=tk.DISABLED)
+            self.is_processing = False
+            messagebox.showinfo("Hoàn thành", f"Đã chạy xong hàng đợi!\nThành công: {completed_count}/{total_items}\nLỗi: {failed_count}\nThời gian: {total_time} giây.")
+        _safe_update(_finish_ui)
 
     def _load_config(self):
         script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -1336,7 +1338,7 @@ class CapCutBatchStudioApp(tk.Tk):
         default_config = {
             "colab_url": "",
             "drafts_dir": get_default_drafts_dir(),
-            "language": "Tiếng Việt (vi)",
+            "language": "Tự động nhận diện",
             "max_words": 13,
             "group_subtitles": True,
             "auto_export_srt": True,
@@ -1362,7 +1364,7 @@ class CapCutBatchStudioApp(tk.Tk):
                 "language": self.var_language.get(),
                 "max_words": int(self.var_max_words.get()),
                 "group_subtitles": bool(self.var_group_sub.get()),
-                "auto_export_srt": bool(self.var_auto_export_srt.get()),
+                "auto_export_srt": True,
                 "output_dir": self.var_output_dir.get()
             }
             with open(config_path, "w", encoding="utf-8") as f:
@@ -1372,6 +1374,7 @@ class CapCutBatchStudioApp(tk.Tk):
     def _on_close(self):
         self._save_config()
         self.destroy()
+
 
 if __name__ == "__main__":
     app = CapCutBatchStudioApp()
