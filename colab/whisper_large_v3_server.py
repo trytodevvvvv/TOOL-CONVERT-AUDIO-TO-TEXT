@@ -67,7 +67,7 @@ from faster_whisper import WhisperModel, BatchedInferencePipeline
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 COMPUTE_TYPE = "float16" if DEVICE == "cuda" else "int8"
-BATCH_SIZE = 36  # Batch size 24 lát cắt audio song song đẩy VRAM lên ngưỡng 13.0 - 13.5 GB
+BATCH_SIZE = 30  # Batch size 24 lát cắt audio song song đẩy VRAM lên ngưỡng 13.0 - 13.5 GB
 BEAM_SIZE = 5    # Chuẩn độ chính xác SOTA cao nhất cho tiếng Việt
 
 print(f"--> [1/3] Đang nạp model Faster-Whisper large-v3 vào GPU ({DEVICE.upper()})...")
@@ -114,7 +114,7 @@ class TranscribeRequest(BaseModel):
     audio_base64: str
     audio_ext: Optional[str] = "flac"
     language: Optional[str] = "vi"
-    batch_size: Optional[int] = 36
+    batch_size: Optional[int] = 30
     beam_size: Optional[int] = 5
     vad_filter: Optional[bool] = True
 
@@ -178,35 +178,74 @@ def _execute_transcribe(req: TranscribeRequest):
 
         start_time = time.time()
         
-        # Nếu có Batched Pipeline và đang chạy trên CUDA, dùng Batched để tối đa hóa GPU T4
-        if batched_pipeline is not None and DEVICE == "cuda":
-            segments_gen, info = batched_pipeline.transcribe(
-                tmp_path,
-                batch_size=batch_size,
-                **transcribe_kwargs
-            )
-        else:
-            segments_gen, info = base_model.transcribe(
-                tmp_path,
-                **transcribe_kwargs
-            )
-
+        # Thực thi nhận diện với cơ chế Tự phục hồi GPU chống treo khi gặp OOM
         parsed_segments = []
-        for s in segments_gen:
-            words_data = []
-            if hasattr(s, "words") and s.words:
-                for w in s.words:
-                    words_data.append({
-                        "start": round(float(w.start), 3),
-                        "end": round(float(w.end), 3),
-                        "word": w.word.strip()
+        try:
+            if batched_pipeline is not None and DEVICE == "cuda":
+                segments_gen, info = batched_pipeline.transcribe(
+                    tmp_path,
+                    batch_size=batch_size,
+                    **transcribe_kwargs
+                )
+            else:
+                segments_gen, info = base_model.transcribe(
+                    tmp_path,
+                    **transcribe_kwargs
+                )
+
+            for s in segments_gen:
+                words_data = []
+                if hasattr(s, "words") and s.words:
+                    for w in s.words:
+                        words_data.append({
+                            "start": round(float(w.start), 3),
+                            "end": round(float(w.end), 3),
+                            "word": w.word.strip()
+                        })
+                parsed_segments.append({
+                    "start": round(float(s.start), 3),
+                    "end": round(float(s.end), 3),
+                    "text": s.text.strip(),
+                    "words": words_data
+                })
+        except Exception as err:
+            err_msg = str(err).lower()
+            if "out of memory" in err_msg or "cuda" in err_msg:
+                print(f"--> [TỰ PHỤC HỒI GPU] Phát hiện tràn VRAM ({err}). Đang giải phóng bộ nhớ và tự động thử lại an toàn với batch_size=16...")
+                gc.collect()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                    torch.cuda.ipc_collect()
+                try:
+                    if batched_pipeline is not None and base_model is not None:
+                        batched_pipeline = BatchedInferencePipeline(model=base_model)
+                except Exception: pass
+                
+                safe_batch = 16
+                segments_gen, info = batched_pipeline.transcribe(
+                    tmp_path,
+                    batch_size=safe_batch,
+                    **transcribe_kwargs
+                ) if (batched_pipeline is not None and DEVICE == "cuda") else base_model.transcribe(tmp_path, **transcribe_kwargs)
+                
+                parsed_segments = []
+                for s in segments_gen:
+                    words_data = []
+                    if hasattr(s, "words") and s.words:
+                        for w in s.words:
+                            words_data.append({
+                                "start": round(float(w.start), 3),
+                                "end": round(float(w.end), 3),
+                                "word": w.word.strip()
+                            })
+                    parsed_segments.append({
+                        "start": round(float(s.start), 3),
+                        "end": round(float(s.end), 3),
+                        "text": s.text.strip(),
+                        "words": words_data
                     })
-            parsed_segments.append({
-                "start": round(float(s.start), 3),
-                "end": round(float(s.end), 3),
-                "text": s.text.strip(),
-                "words": words_data
-            })
+            else:
+                raise err
 
         duration_proc = round(time.time() - start_time, 2)
         
@@ -230,6 +269,7 @@ def _execute_transcribe(req: TranscribeRequest):
             torch.cuda.empty_cache()
 
 def _async_worker(task_id: str, req: TranscribeRequest):
+    global batched_pipeline
     try:
         res = _execute_transcribe(req)
         with TASKS_LOCK:
@@ -237,10 +277,19 @@ def _async_worker(task_id: str, req: TranscribeRequest):
     except Exception as e:
         with TASKS_LOCK:
             TASKS[task_id] = {"status": "failed", "error": str(e)}
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.ipc_collect()
+        try:
+            if batched_pipeline is not None and base_model is not None:
+                batched_pipeline = BatchedInferencePipeline(model=base_model)
+        except Exception: pass
     finally:
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
+            torch.cuda.ipc_collect()
 
 # ==============================================================================
 # PHẦN 3: ĐỊNH NGHĨA CÁC ENDPOINT API

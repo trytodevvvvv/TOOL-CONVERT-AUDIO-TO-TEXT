@@ -170,7 +170,7 @@ if torch.cuda.is_available():
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 COMPUTE_TYPE = "float16" if DEVICE == "cuda" else "int8"
-BATCH_SIZE = 36  # Khai thác tối đa ~13.5 GB VRAM trên Tesla T4
+BATCH_SIZE = 30  # Khai thác tối đa ~13.5 GB VRAM trên Tesla T4
 BEAM_SIZE = 5    # SOTA accuracy
 
 print(f"--> Đang nạp model Whisper Large-v3 vào GPU ({torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU'})...")
@@ -201,7 +201,7 @@ class TranscribeRequest(BaseModel):
     audio_base64: str
     audio_ext: Optional[str] = "flac"
     language: Optional[str] = "vi"
-    batch_size: Optional[int] = 36
+    batch_size: Optional[int] = 30
     beam_size: Optional[int] = 5
     vad_filter: Optional[bool] = True
 
@@ -262,34 +262,73 @@ def _execute_transcribe(req: TranscribeRequest):
         )
 
         start_t = time.time()
-        if batched_pipeline is not None and DEVICE == "cuda":
-            segments_gen, info = batched_pipeline.transcribe(
-                tmp_path,
-                batch_size=batch_size,
-                **transcribe_kwargs
-            )
-        else:
-            segments_gen, info = base_model.transcribe(
-                tmp_path,
-                **transcribe_kwargs
-            )
-
         parsed_segments = []
-        for s in segments_gen:
-            words_data = []
-            if hasattr(s, "words") and s.words:
-                for w in s.words:
-                    words_data.append({
-                        "start": round(float(w.start), 3),
-                        "end": round(float(w.end), 3),
-                        "word": w.word.strip()
+        try:
+            if batched_pipeline is not None and DEVICE == "cuda":
+                segments_gen, info = batched_pipeline.transcribe(
+                    tmp_path,
+                    batch_size=batch_size,
+                    **transcribe_kwargs
+                )
+            else:
+                segments_gen, info = base_model.transcribe(
+                    tmp_path,
+                    **transcribe_kwargs
+                )
+
+            for s in segments_gen:
+                words_data = []
+                if hasattr(s, "words") and s.words:
+                    for w in s.words:
+                        words_data.append({
+                            "start": round(float(w.start), 3),
+                            "end": round(float(w.end), 3),
+                            "word": w.word.strip()
+                        })
+                parsed_segments.append({
+                    "start": round(float(s.start), 3),
+                    "end": round(float(s.end), 3),
+                    "text": s.text.strip(),
+                    "words": words_data
+                })
+        except Exception as err:
+            err_msg = str(err).lower()
+            if "out of memory" in err_msg or "cuda" in err_msg:
+                print(f"--> [TỰ PHỤC HỒI GPU] Phát hiện tràn VRAM ({err}). Đang giải phóng bộ nhớ và tự động thử lại an toàn với batch_size=16...")
+                gc.collect()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                    torch.cuda.ipc_collect()
+                try:
+                    if batched_pipeline is not None and base_model is not None:
+                        batched_pipeline = BatchedInferencePipeline(model=base_model)
+                except Exception: pass
+                
+                safe_batch = 16
+                segments_gen, info = batched_pipeline.transcribe(
+                    tmp_path,
+                    batch_size=safe_batch,
+                    **transcribe_kwargs
+                ) if (batched_pipeline is not None and DEVICE == "cuda") else base_model.transcribe(tmp_path, **transcribe_kwargs)
+                
+                parsed_segments = []
+                for s in segments_gen:
+                    words_data = []
+                    if hasattr(s, "words") and s.words:
+                        for w in s.words:
+                            words_data.append({
+                                "start": round(float(w.start), 3),
+                                "end": round(float(w.end), 3),
+                                "word": w.word.strip()
+                            })
+                    parsed_segments.append({
+                        "start": round(float(s.start), 3),
+                        "end": round(float(s.end), 3),
+                        "text": s.text.strip(),
+                        "words": words_data
                     })
-            parsed_segments.append({
-                "start": round(float(s.start), 3),
-                "end": round(float(s.end), 3),
-                "text": s.text.strip(),
-                "words": words_data
-            })
+            else:
+                raise err
 
         return {
             "success": True,
@@ -309,6 +348,7 @@ def _execute_transcribe(req: TranscribeRequest):
             torch.cuda.empty_cache()
 
 def _async_worker(task_id: str, req: TranscribeRequest):
+    global batched_pipeline
     try:
         res = _execute_transcribe(req)
         with TASKS_LOCK:
@@ -316,10 +356,19 @@ def _async_worker(task_id: str, req: TranscribeRequest):
     except Exception as e:
         with TASKS_LOCK:
             TASKS[task_id] = {"status": "failed", "error": str(e)}
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.ipc_collect()
+        try:
+            if batched_pipeline is not None and base_model is not None:
+                batched_pipeline = BatchedInferencePipeline(model=base_model)
+        except Exception: pass
     finally:
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
+            torch.cuda.ipc_collect()
 
 @app.get("/")
 @app.get("/health")
@@ -510,7 +559,7 @@ def transcribe_audio_colab(colab_url, audio_path, language_code, log_callback, s
         "audio_base64": b64_audio,
         "audio_ext": audio_ext,
         "language": language_code or "auto",
-        "batch_size": 36, # Khai thác tối đa 13.0 - 13.5 GB VRAM trên Tesla T4
+        "batch_size": 30, # Cân bằng tối ưu ~12.8 - 13.0 GB VRAM Tesla T4 an toàn tuyệt đối
         "beam_size": 5,
         "vad_filter": True
     }).encode("utf-8")
@@ -518,7 +567,7 @@ def transcribe_audio_colab(colab_url, audio_path, language_code, log_callback, s
     log_callback("  -> Đang gửi file lên GPU Colab T4...")
     req = urllib.request.Request(submit_url, data=payload, headers={"Content-Type": "application/json", "User-Agent": "CapCutSTTTool/2.0"}, method="POST")
     
-    with urllib.request.urlopen(req, timeout=45) as resp:
+    with urllib.request.urlopen(req, timeout=300) as resp:
         res = json.loads(resp.read().decode("utf-8"))
         
     task_id = res.get("task_id")
@@ -1711,6 +1760,11 @@ class CapCutBatchStudioApp(tk.Tk):
                 ])
                 self.log(f"  [LỖI] Xử lý dự án {name} thất bại: {e}")
                 failed_count += 1
+                try:
+                    clear_colab_gpu_memory(colab_url, self.log)
+                    time.sleep(1.0)
+                except Exception:
+                    pass
                 
             elapsed_tot = int(time.time() - start_batch_time)
             mins, secs = elapsed_tot // 60, elapsed_tot % 60
