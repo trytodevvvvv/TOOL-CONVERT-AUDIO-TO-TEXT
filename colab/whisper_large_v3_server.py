@@ -14,8 +14,20 @@ import threading
 import subprocess
 import re
 import uuid
-import gc
+import gc, glob, site, ctypes
 from typing import Optional, List
+
+# Cấu hình và nạp thư viện CUDA 12 (libcublas, libcudnn) cho CTranslate2
+for sp in site.getsitepackages():
+    cublas_lib = os.path.join(sp, "nvidia", "cublas", "lib")
+    cudnn_lib = os.path.join(sp, "nvidia", "cudnn", "lib")
+    if os.path.exists(cublas_lib):
+        os.environ["LD_LIBRARY_PATH"] = f"{cublas_lib}:{cudnn_lib}:" + os.environ.get("LD_LIBRARY_PATH", "")
+        for lib_file in sorted(glob.glob(os.path.join(cublas_lib, "*.so*")) + glob.glob(os.path.join(cudnn_lib, "*.so*"))):
+            try:
+                ctypes.CDLL(lib_file, mode=ctypes.RTLD_GLOBAL)
+            except Exception:
+                pass
 
 # Cấu hình PyTorch CUDA Memory Allocator chống phân mảnh RAM GPU khi chạy ở mức 13.5GB
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
@@ -78,7 +90,8 @@ if torch.cuda.is_available():
         import numpy as np
         print("--> Đang Warm-up GPU...")
         dummy_audio = np.zeros(16000 * 2, dtype=np.float32)
-        _ = base_model.transcribe(dummy_audio, beam_size=1)
+        gen, _ = base_model.transcribe(dummy_audio, beam_size=1)
+        _ = list(gen) # CƯỠNG BỨC chạy phép tính ma trận cuBLAS
         torch.cuda.empty_cache()
     except Exception:
         pass

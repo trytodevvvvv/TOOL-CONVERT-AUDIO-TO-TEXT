@@ -117,7 +117,8 @@ def get_colab_run_code():
 # ==============================================================================
 # BƯỚC 1: Cài đặt thư viện Faster-Whisper, FastAPI & Cloudflared
 # ==============================================================================
-!pip install -q faster-whisper "av<18" fastapi uvicorn pydantic nest-asyncio soundfile
+!pip install -q faster-whisper "av<18" nvidia-cublas-cu12 nvidia-cudnn-cu12 fastapi uvicorn pydantic nest-asyncio soundfile
+!python3 -c "import site, os; sp=site.getsitepackages()[0]; open('/etc/ld.so.conf.d/nvidia-cu12.conf', 'w').write(f'{sp}/nvidia/cublas/lib\n{sp}/nvidia/cudnn/lib\n'); os.system('ldconfig')"
 !wget -q -nc https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
 !dpkg -i cloudflared-linux-amd64.deb > /dev/null 2>&1
 print("✅ [1/2] Đã cài đặt hoàn tất các gói thư viện!")
@@ -125,10 +126,22 @@ print("✅ [1/2] Đã cài đặt hoàn tất các gói thư viện!")
 # ==============================================================================
 # BƯỚC 2: Khởi chạy Server Whisper Large-v3 (Batched 13.5GB VRAM) & Cloudflare
 # ==============================================================================
-import os, io, time, base64, tempfile, threading, subprocess, re, uuid, gc
+import os, io, time, base64, tempfile, threading, subprocess, re, uuid, gc, glob, site, ctypes
 from typing import Optional
 
-# Vá lỗi tương thích giữa PyAV và faster-whisper (loại bỏ metadata_errors trên PyAV 18+)
+# 1. Cấu hình và nạp thư viện CUDA 12 (libcublas, libcudnn) cho CTranslate2
+for sp in site.getsitepackages():
+    cublas_lib = os.path.join(sp, "nvidia", "cublas", "lib")
+    cudnn_lib = os.path.join(sp, "nvidia", "cudnn", "lib")
+    if os.path.exists(cublas_lib):
+        os.environ["LD_LIBRARY_PATH"] = f"{cublas_lib}:{cudnn_lib}:" + os.environ.get("LD_LIBRARY_PATH", "")
+        for lib_file in sorted(glob.glob(os.path.join(cublas_lib, "*.so*")) + glob.glob(os.path.join(cudnn_lib, "*.so*"))):
+            try:
+                ctypes.CDLL(lib_file, mode=ctypes.RTLD_GLOBAL)
+            except Exception:
+                pass
+
+# 2. Vá lỗi tương thích giữa PyAV và faster-whisper (loại bỏ metadata_errors trên PyAV 18+)
 try:
     import av
     _orig_av_open = av.open
@@ -161,6 +174,19 @@ try:
     print("--> Kích hoạt BatchedInferencePipeline thành công!")
 except Exception as e:
     batched_pipeline = None
+
+# Thực hiện Warm-up và kiểm tra CUDA inference thực tế (ép CTranslate2 load cuBLAS)
+if torch.cuda.is_available():
+    try:
+        import numpy as np
+        print("--> Đang kiểm tra và Warm-up GPU Tesla T4...")
+        dummy_audio = np.zeros(16000 * 2, dtype=np.float32)
+        gen, _ = base_model.transcribe(dummy_audio, beam_size=1)
+        _ = list(gen) # CƯỠNG BỨC chạy phép tính ma trận cuBLAS
+        torch.cuda.empty_cache()
+        print("--> Warm-up hoàn tất: GPU Tesla T4 & cuBLAS đã sẵn sàng 100%!")
+    except Exception as e:
+        print(f"--> Cảnh báo Warm-up GPU: {e}")
 
 app = FastAPI(title="Whisper Large-v3 Colab Server")
 
