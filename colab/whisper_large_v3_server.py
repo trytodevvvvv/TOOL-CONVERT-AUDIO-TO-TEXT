@@ -132,10 +132,49 @@ def _execute_transcribe(req: TranscribeRequest):
             f.write(raw_bytes)
             tmp_path = f.name
 
-        target_lang = None if (not req.language or req.language.lower() in ("auto", "none")) else req.language
+        LANGUAGE_PROMPTS = {
+            "vi": "Sau đây là bài thuyết minh chất lượng cao, chuẩn tiếng Việt, có đầy đủ dấu câu, ngữ pháp chính xác, viết hoa đúng chuẩn.",
+            "en": "The following is a clear, high-quality narration with correct punctuation, capitalization, and grammar.",
+            "ko": "다음은 명확하고 고품질의 내레이션으로, 올바른 맞춤법, 띄어쓰기, 문장 부호(., ?) 및 표준어를 사용합니다.",
+            "ja": "以下は、句読点（、。）を適切に配置し、自然な日本語の文法と正確な漢字表記を用いた高品質なナレーションです。",
+            "es": "La siguiente es una narración clara y de alta calidad, con puntuación correcta (¿?, ¡!), acentuación adecuada y ortografía precisa.",
+            "pt": "A seguir está uma narração clara e de alta qualidade, com pontuação correta, acentuação adequada e excelente gramática em português.",
+            "pt-BR": "A seguir está uma narração clara e de alta qualidade, com pontuação correta, acentuação adequada e excelente gramática em português do Brasil.",
+            "zh": "以下是一段高质量的解说，标点符号（，。）规范，语法标准，用词准确。"
+        }
+
+        raw_lang = (req.language or "").strip()
+        if not raw_lang or raw_lang.lower() in ("auto", "none"):
+            target_lang = None
+            initial_prompt = None
+        elif raw_lang == "pt-BR":
+            target_lang = "pt"
+            initial_prompt = LANGUAGE_PROMPTS.get("pt-BR")
+        else:
+            target_lang = raw_lang
+            initial_prompt = LANGUAGE_PROMPTS.get(target_lang, None)
+
         batch_size = req.batch_size or BATCH_SIZE
         beam_size = req.beam_size or BEAM_SIZE
         vad = True if req.vad_filter is None else req.vad_filter
+
+        vad_params = dict(
+            threshold=0.35,
+            min_speech_duration_ms=250,
+            min_silence_duration_ms=1000,
+            speech_pad_ms=500
+        )
+
+        transcribe_kwargs = dict(
+            beam_size=beam_size,
+            language=target_lang,
+            vad_filter=vad,
+            vad_parameters=vad_params,
+            word_timestamps=True,
+            initial_prompt=initial_prompt,
+            repetition_penalty=1.15,
+            hallucination_silence_threshold=2.0
+        )
 
         start_time = time.time()
         
@@ -144,28 +183,29 @@ def _execute_transcribe(req: TranscribeRequest):
             segments_gen, info = batched_pipeline.transcribe(
                 tmp_path,
                 batch_size=batch_size,
-                beam_size=beam_size,
-                language=target_lang,
-                vad_filter=vad,
-                vad_parameters=dict(min_silence_duration_ms=500),
-                word_timestamps=True
+                **transcribe_kwargs
             )
         else:
             segments_gen, info = base_model.transcribe(
                 tmp_path,
-                beam_size=beam_size,
-                language=target_lang,
-                vad_filter=vad,
-                vad_parameters=dict(min_silence_duration_ms=500),
-                word_timestamps=True
+                **transcribe_kwargs
             )
 
         parsed_segments = []
         for s in segments_gen:
+            words_data = []
+            if hasattr(s, "words") and s.words:
+                for w in s.words:
+                    words_data.append({
+                        "start": round(float(w.start), 3),
+                        "end": round(float(w.end), 3),
+                        "word": w.word.strip()
+                    })
             parsed_segments.append({
                 "start": round(float(s.start), 3),
                 "end": round(float(s.end), 3),
-                "text": s.text.strip()
+                "text": s.text.strip(),
+                "words": words_data
             })
 
         duration_proc = round(time.time() - start_time, 2)

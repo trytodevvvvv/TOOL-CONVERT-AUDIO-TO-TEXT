@@ -170,7 +170,7 @@ if torch.cuda.is_available():
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 COMPUTE_TYPE = "float16" if DEVICE == "cuda" else "int8"
 BATCH_SIZE = 24  # Batching 24 block âm thanh song song đẩy VRAM lên 13.0 - 13.5 GB
-BEAM_SIZE = 5    # SOTA accuracy cho tiếng Việt
+BEAM_SIZE = 5    # SOTA accuracy
 
 print(f"--> Đang nạp model Whisper Large-v3 vào GPU ({torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU'})...")
 base_model = WhisperModel("large-v3", device=DEVICE, compute_type=COMPUTE_TYPE, cpu_threads=4, num_workers=2)
@@ -207,6 +207,17 @@ class TranscribeRequest(BaseModel):
 TASKS = {}
 TASKS_LOCK = threading.Lock()
 
+LANGUAGE_PROMPTS = {
+    "vi": "Sau đây là bài thuyết minh chất lượng cao, chuẩn tiếng Việt, có đầy đủ dấu câu, ngữ pháp chính xác, viết hoa đúng chuẩn.",
+    "en": "The following is a clear, high-quality narration with correct punctuation, capitalization, and grammar.",
+    "ko": "다음은 명확하고 고품질의 내레이션으로, 올바른 맞춤법, 띄어쓰기, 문장 부호(., ?) 및 표준어를 사용합니다.",
+    "ja": "以下は、句読点（、。）を適切に配置し、自然な日本語の文法と正確な漢字表記を用いた高品質なナレーションです。",
+    "es": "La siguiente es una narración clara y de alta calidad, con puntuación correcta (¿?, ¡!), acentuación adecuada y ortografía precisa.",
+    "pt": "A seguir está uma narração clara e de alta qualidade, com pontuação correta, acentuação adequada e excelente gramática em português.",
+    "pt-BR": "A seguir está uma narração clara e de alta qualidade, com pontuação correta, acentuação adequada e excelente gramática em português do Brasil.",
+    "zh": "以下是一段高质量的解说，标点符号（，。）规范，语法标准，用词准确。"
+}
+
 def _execute_transcribe(req: TranscribeRequest):
     raw_bytes = base64.b64decode(req.audio_base64)
     ext = req.audio_ext or "flac"
@@ -216,43 +227,74 @@ def _execute_transcribe(req: TranscribeRequest):
             f.write(raw_bytes)
             tmp_path = f.name
 
-        target_lang = None if (not req.language or req.language.lower() in ("auto", "none")) else req.language
+        raw_lang = (req.language or "").strip()
+        if not raw_lang or raw_lang.lower() in ("auto", "none"):
+            target_lang = None
+            initial_prompt = None
+        elif raw_lang == "pt-BR":
+            target_lang = "pt"
+            initial_prompt = LANGUAGE_PROMPTS.get("pt-BR")
+        else:
+            target_lang = raw_lang
+            initial_prompt = LANGUAGE_PROMPTS.get(target_lang, None)
+
         batch_size = req.batch_size or BATCH_SIZE
         beam_size = req.beam_size or BEAM_SIZE
         vad = True if req.vad_filter is None else req.vad_filter
+
+        vad_params = dict(
+            threshold=0.35,
+            min_speech_duration_ms=250,
+            min_silence_duration_ms=1000,
+            speech_pad_ms=500
+        )
+
+        transcribe_kwargs = dict(
+            beam_size=beam_size,
+            language=target_lang,
+            vad_filter=vad,
+            vad_parameters=vad_params,
+            word_timestamps=True,
+            initial_prompt=initial_prompt,
+            repetition_penalty=1.15,
+            hallucination_silence_threshold=2.0
+        )
 
         start_t = time.time()
         if batched_pipeline is not None and DEVICE == "cuda":
             segments_gen, info = batched_pipeline.transcribe(
                 tmp_path,
                 batch_size=batch_size,
-                beam_size=beam_size,
-                language=target_lang,
-                vad_filter=vad,
-                vad_parameters=dict(min_silence_duration_ms=500),
-                word_timestamps=True
+                **transcribe_kwargs
             )
         else:
             segments_gen, info = base_model.transcribe(
                 tmp_path,
-                beam_size=beam_size,
-                language=target_lang,
-                vad_filter=vad,
-                vad_parameters=dict(min_silence_duration_ms=500),
-                word_timestamps=True
+                **transcribe_kwargs
             )
 
         parsed_segments = []
         for s in segments_gen:
+            words_data = []
+            if hasattr(s, "words") and s.words:
+                for w in s.words:
+                    words_data.append({
+                        "start": round(float(w.start), 3),
+                        "end": round(float(w.end), 3),
+                        "word": w.word.strip()
+                    })
             parsed_segments.append({
                 "start": round(float(s.start), 3),
                 "end": round(float(s.end), 3),
-                "text": s.text.strip()
+                "text": s.text.strip(),
+                "words": words_data
             })
 
         return {
             "success": True,
             "language": info.language,
+            "language_probability": round(float(info.language_probability), 4) if hasattr(info, "language_probability") else 1.0,
+            "audio_duration_sec": round(float(info.duration), 2) if hasattr(info, "duration") else 0.0,
             "processing_time_sec": round(time.time() - start_t, 2),
             "total_segments": len(parsed_segments),
             "segments": parsed_segments
@@ -262,54 +304,72 @@ def _execute_transcribe(req: TranscribeRequest):
             try: os.remove(tmp_path)
             except Exception: pass
         gc.collect()
-        if torch.cuda.is_available(): torch.cuda.empty_cache()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
 def _async_worker(task_id: str, req: TranscribeRequest):
     try:
         res = _execute_transcribe(req)
-        with TASKS_LOCK: TASKS[task_id] = {"status": "completed", "result": res}
+        with TASKS_LOCK:
+            TASKS[task_id] = {"status": "completed", "result": res}
     except Exception as e:
-        with TASKS_LOCK: TASKS[task_id] = {"status": "failed", "error": str(e)}
+        with TASKS_LOCK:
+            TASKS[task_id] = {"status": "failed", "error": str(e)}
     finally:
         gc.collect()
-        if torch.cuda.is_available(): torch.cuda.empty_cache()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
 @app.get("/")
 @app.get("/health")
-def health_check():
+def health():
     gpu_name = torch.cuda.get_device_name(0) if torch.cuda.is_available() else "CPU"
     free_mem, total_mem = torch.cuda.mem_get_info(0) if torch.cuda.is_available() else (0, 0)
+    used_mem = total_mem - free_mem
     return {
         "status": "ready",
+        "device": DEVICE,
         "gpu_name": gpu_name,
-        "vram_used_gb": round((total_mem - free_mem) / (1024**3), 2),
+        "vram_used_gb": round(used_mem / (1024**3), 2),
         "vram_free_gb": round(free_mem / (1024**3), 2),
-        "vram_total_gb": round(total_mem / (1024**3), 2),
-        "model": "faster-whisper large-v3"
+        "vram_total_gb": round(total_mem / (1024**3), 2)
     }
 
-@app.post("/submit_transcribe")
-def submit_transcribe(req: TranscribeRequest):
+@app.post("/transcribe")
+def transcribe_sync(req: TranscribeRequest):
+    return _execute_transcribe(req)
+
+@app.post("/task_submit")
+def task_submit(req: TranscribeRequest):
     task_id = str(uuid.uuid4())
-    with TASKS_LOCK: TASKS[task_id] = {"status": "processing", "start_time": time.time()}
-    threading.Thread(target=_async_worker, args=(task_id, req), daemon=True).start()
-    return {"success": True, "task_id": task_id}
+    with TASKS_LOCK:
+        TASKS[task_id] = {"status": "processing"}
+    th = threading.Thread(target=_async_worker, args=(task_id, req), daemon=True)
+    th.start()
+    return {"task_id": task_id}
 
 @app.get("/task_status/{task_id}")
-def get_task_status(task_id: str):
-    with TASKS_LOCK: task = TASKS.get(task_id)
-    if not task: return {"status": "failed", "error": "Task not found"}
-    if task["status"] == "completed": return {"status": "completed", "result": task["result"]}
-    elif task["status"] == "failed": return {"status": "failed", "error": task.get("error", "Unknown error")}
-    else: return {"status": "processing"}
+def task_status(task_id: str):
+    with TASKS_LOCK:
+        if task_id not in TASKS:
+            return {"status": "not_found"}
+        return TASKS[task_id]
 
 @app.post("/task_clear/{task_id}")
-def clear_task_status(task_id: str):
-    with TASKS_LOCK: TASKS.pop(task_id, None)
-    return {"success": True}
+def task_clear(task_id: str):
+    with TASKS_LOCK:
+        if task_id in TASKS:
+            del TASKS[task_id]
+    return {"status": "cleared"}
 
+# Khởi động Uvicorn ngầm và Cloudflare Tunnel
 nest_asyncio.apply()
-threading.Thread(target=lambda: uvicorn.run(app, host="127.0.0.1", port=8000, log_level="warning"), daemon=True).start()
+
+def run_uvicorn():
+    uvicorn.run(app, host="127.0.0.1", port=8000, log_level="warning")
+
+server_th = threading.Thread(target=run_uvicorn, daemon=True)
+server_th.start()
 time.sleep(2)
 
 if os.path.exists("cloudflare.log"):
@@ -318,11 +378,11 @@ if os.path.exists("cloudflare.log"):
 
 tunnel_proc = subprocess.Popen(
     ["cloudflared", "tunnel", "--url", "http://127.0.0.1:8000", "--logfile", "cloudflare.log"],
-    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+    stdout=subprocess.DEVNULL,
+    stderr=subprocess.DEVNULL
 )
 
 public_url = None
-print("\\nĐang kết nối đường hầm Cloudflare Tunnel...")
 for _ in range(35):
     time.sleep(1)
     if os.path.exists("cloudflare.log"):
@@ -333,10 +393,10 @@ for _ in range(35):
                 break
 
 if public_url:
-    print("\\n" + "=" * 70)
+    print("=" * 70)
     print("🚀 KẾT NỐI GPU COLAB THÀNH CÔNG (TESLA T4 16GB - WHISPER LARGE-V3)!")
     print(f"👉 DÁN LINK NÀY VÀO TOOL DESKTOP: {public_url}")
-    print("=" * 70 + "\\n")
+    print("=" * 70)
     print("⏳ Server đang chạy ngầm... Giữ tab Google Colab mở để duy trì GPU.")
     try: tunnel_proc.wait()
     except KeyboardInterrupt: print("Đã dừng server.")
@@ -344,139 +404,162 @@ else:
     print("❌ Lỗi: Không thể lấy được link Cloudflare. Vui lòng thử lại.")
 """
 
-def check_colab_health(colab_url):
-    """Kiểm tra tình trạng máy chủ GPU Google Colab."""
-    if not colab_url or not colab_url.startswith("http"):
-        return False, "Link Colab không hợp lệ (cần bắt đầu bằng https://)"
-    url = f"{colab_url.rstrip('/')}/health"
-    try:
-        req = urllib.request.Request(url, headers={"User-Agent": "CapCutSTTTool/2.0"})
-        with urllib.request.urlopen(req, timeout=7) as resp:
-            if resp.status == 200:
-                data = json.loads(resp.read().decode("utf-8"))
-                gpu = data.get("gpu_name", "GPU")
-                vram_free = data.get("vram_free_gb", 0)
-                vram_total = data.get("vram_total_gb", 0)
-                return True, f"ĐÃ KẾT NỐI: {gpu} (Trống {vram_free}GB / {vram_total}GB VRAM) - Whisper Large-v3"
-            return False, f"Server phản hồi mã lỗi: {resp.status}"
-    except Exception as e:
-        return False, f"Không thể kết nối Colab: {e}"
-
-def compress_audio_for_colab(audio_path, log_callback):
-    """
-    Nén nhanh âm thanh sang 16kHz Mono FLAC lossless bằng FFmpeg
-    để giảm dung lượng 80-90% trước khi tải lên Colab.
-    """
-    setup_ffmpeg_path()
-    ffmpeg_exe = shutil.which("ffmpeg")
-    temp_dir = tempfile.gettempdir()
-    flac_out = os.path.join(temp_dir, f"capcut_stt_{uuid.uuid4().hex[:8]}.flac")
-    
-    if ffmpeg_exe:
-        log_callback("  -> Nén audio sang 16kHz mono FLAC siêu tốc trước khi tải lên Colab...")
-        cmd = [
-            ffmpeg_exe, "-y",
-            "-i", audio_path,
-            "-vn",
-            "-ac", "1",
-            "-ar", "16000",
-            "-c:a", "flac",
-            flac_out
-        ]
-        try:
-            import subprocess
-            subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
-            if os.path.exists(flac_out) and os.path.getsize(flac_out) > 0:
-                orig_mb = os.path.getsize(audio_path) / (1024 * 1024)
-                flac_mb = os.path.getsize(flac_out) / (1024 * 1024)
-                log_callback(f"  -> Nén thành công: {orig_mb:.1f} MB -> {flac_mb:.1f} MB (Tải lên Colab chỉ mất 1-2s)")
-                with open(flac_out, "rb") as f:
-                    b64_data = base64.b64encode(f.read()).decode("utf-8")
-                try: os.remove(flac_out)
-                except Exception: pass
-                return b64_data, "flac"
-        except Exception as e:
-            log_callback(f"  [Cảnh báo FFmpeg] {e}. Sẽ nạp trực tiếp file gốc...")
-
-    with open(audio_path, "rb") as f:
-        ext = os.path.splitext(audio_path)[1].replace(".", "").lower() or "wav"
-        return base64.b64encode(f.read()).decode("utf-8"), ext
-
-def transcribe_audio_colab(colab_url, audio_path, language_code, log_callback, stop_event=None):
-    """Gửi âm thanh lên GPU Colab Tesla T4 và nhận lại danh sách segments."""
-    b64_audio, audio_ext = compress_audio_for_colab(audio_path, log_callback)
-    
-    if stop_event and stop_event.is_set():
-        raise InterruptedError("Tiến trình đã bị người dùng hủy.")
-        
-    submit_url = f"{colab_url.rstrip('/')}/submit_transcribe"
-    payload = json.dumps({
-        "audio_base64": b64_audio,
-        "audio_ext": audio_ext,
-        "language": language_code or "vi",
-        "batch_size": 24, # Khai thác tối đa 13.0 - 13.5 GB VRAM trên Tesla T4
-        "beam_size": 5,
-        "vad_filter": True
-    }).encode("utf-8")
-    
-    log_callback("  -> Đang gửi file lên GPU Colab T4...")
-    req = urllib.request.Request(submit_url, data=payload, headers={"Content-Type": "application/json", "User-Agent": "CapCutSTTTool/2.0"}, method="POST")
-    
-    with urllib.request.urlopen(req, timeout=45) as resp:
-        res = json.loads(resp.read().decode("utf-8"))
-        
-    task_id = res.get("task_id")
-    if not task_id:
-        raise RuntimeError(f"Server Colab không trả về task_id: {res}")
-        
-    log_callback(f"  -> Tác vụ đã vào hàng đợi GPU Colab (ID: {task_id[:8]}...). Đang giải mã...")
-    status_url = f"{colab_url.rstrip('/')}/task_status/{task_id}"
-    start_time = time.time()
-    
-    while True:
-        if stop_event and stop_event.is_set():
-            raise InterruptedError("Tiến trình đã bị hủy.")
-        time.sleep(1.5)
-        try:
-            poll_req = urllib.request.Request(status_url, headers={"User-Agent": "CapCutSTTTool/2.0"})
-            with urllib.request.urlopen(poll_req, timeout=15) as poll_resp:
-                status_data = json.loads(poll_resp.read().decode("utf-8"))
-        except Exception:
-            continue
-            
-        status = status_data.get("status")
-        if status == "completed":
-            result = status_data.get("result", {})
-            proc_time = result.get("processing_time_sec", round(time.time() - start_time, 2))
-            segments = result.get("segments", [])
-            log_callback(f"  -> GPU Tesla T4 hoàn thành trong {proc_time}s! Nhận diện {len(segments)} đoạn phụ đề.")
-            try:
-                clear_req = urllib.request.Request(f"{colab_url.rstrip('/')}/task_clear/{task_id}", data=b"{}", headers={"Content-Type": "application/json"}, method="POST")
-                urllib.request.urlopen(clear_req, timeout=5)
-            except Exception: pass
-            return segments
-        elif status == "failed":
-            err_msg = status_data.get("error", "Lỗi xử lý trên Colab")
-            raise RuntimeError(f"Colab GPU báo lỗi: {err_msg}")
-        else:
-            elapsed = int(time.time() - start_time)
-            if elapsed % 6 == 0 and elapsed > 0:
-                log_callback(f"  ... Tesla T4 đang xử lý song song ({elapsed}s)...")
-
 # ==============================================================================
 # PHẦN 3: XỬ LÝ VĂN BẢN & XUẤT PHỤ ĐỀ CAPCUT / SRT
 # ==============================================================================
 
-COMMON_COMPOUND_WORDS = {
-    "giông bão", "dông bão", "sóng gió", "đau khổ", "hạnh phúc", "yêu thương",
-    "nhân quả", "nghiệp báo", "bình an", "tự tại", "trí tuệ", "giác ngộ",
-    "từ bi", "vô thường", "luân hồi", "giải thoát", "buông thư", "hiện tại",
-    "quá khứ", "tương lai", "tổn thương", "mệt mỏi", "đau buồn", "thiện lương",
-    "phật pháp", "tu hành", "cuộc sống", "tâm hồn", "tinh thần", "gia đình",
-    "sự nghiệp", "thành công", "thất bại", "sinh tử", "đất trời", "núi sông",
-    "gió sương", "mưa nắng", "ngày đêm", "học tập", "làm việc", "vui vẻ",
-    "phút giây", "giây phút", "miệng cười"
-}
+import re
+from collections import Counter
+
+HALLUCINATION_PATTERNS = [
+    # Tiếng Việt
+    r"đăng\s*ký\s*kênh", r"ủng\s*hộ\s*kênh", r"subscribe.*kênh", r"ghiền\s*mì\s*gõ", r"la\s*la\s*school",
+    r"cảm\s*ơn\s*các\s*bạn\s*đã\s*theo\s*dõi", r"hẹn\s*gặp\s*lại", r"hãy\s*like\s*và\s*share",
+    # English
+    r"thank\s*you\s*for\s*watching", r"thanks\s*for\s*watching", r"subscribe\s*to\s*(my|our|the)\s*channel",
+    r"don'?t\s*forget\s*to\s*like", r"like\s*and\s*subscribe", r"subtitles\s*by", r"amara\.org",
+    # Tiếng Hàn
+    r"시청해\s*주셔서\s*감사합니다", r"구독과\s*좋아요", r"구독.*부탁드립니다", r"채널\s*구독",
+    # Tiếng Nhật
+    r"ご視聴ありがとうございました", r"チャンネル登録", r"高評価.*お願いします", r"最後までご視聴",
+    # Tiếng Tây Ban Nha
+    r"gracias\s*por\s*ver", r"suscr[íi]bete", r"dale\s*like", r"no\s*olvides\s*suscribirte",
+    # Tiếng Bồ Đào Nha
+    r"obrigado\s*por\s*assistir", r"inscreva-se", r"deixe\s*seu\s*like", r"compartilhe\s*este\s*v[íi]deo"
+]
+COMPILED_HALLUCINATIONS = [re.compile(p, re.IGNORECASE) for p in HALLUCINATION_PATTERNS]
+
+def is_hallucination_or_repetitive(text, duration=None):
+    clean = text.strip()
+    if not clean:
+        return True
+    
+    # 1. Kiểm tra danh sách đen cụm từ YouTube outro ma
+    for p in COMPILED_HALLUCINATIONS:
+        if p.search(clean):
+            return True
+            
+    # 2. Kiểm tra vòng lặp token bất thường (ví dụ: A: A: A: hoặc nguồn nguồn nguồn)
+    words = [w.strip(".,!?:;\"'()[]{}") for w in clean.split() if w.strip(".,!?:;\"'()[]{}")]
+    if len(words) >= 4:
+        streak = 1
+        max_streak = 1
+        for i in range(1, len(words)):
+            if words[i].lower() == words[i-1].lower():
+                streak += 1
+                max_streak = max(max_streak, streak)
+            else:
+                streak = 1
+        if max_streak >= 3:
+            return True
+            
+        c = Counter(w.lower() for w in words)
+        top_word, count = c.most_common(1)[0]
+        if count / len(words) >= 0.55:
+            return True
+
+    return False
+
+def filter_hallucinations_and_loops(segments, language=None):
+    """Lọc bỏ toàn bộ các câu ảo giác và vòng lặp từ vô tận."""
+    clean_list = []
+    for s in segments:
+        txt = s.get("text", "").strip()
+        dur = float(s.get("end", 0)) - float(s.get("start", 0))
+        if dur <= 0.05 or not txt:
+            continue
+        if is_hallucination_or_repetitive(txt, duration=dur):
+            continue
+        clean_list.append(s)
+    return clean_list
+
+def reconcile_segment_overlaps(segments, min_duration=0.1, min_gap=0.03):
+    """
+    Đảm bảo 100% các đoạn phụ đề không bao giờ chồng lấn (overlap) mốc thời gian.
+    Bảo đảm: segments[i]['start'] >= segments[i-1]['end'] + min_gap
+    Loại bỏ hoàn toàn nguyên nhân CapCut tự sinh ra Track 8 / Layer 2.
+    """
+    if not segments:
+        return []
+        
+    sorted_segs = sorted(segments, key=lambda x: float(x["start"]))
+    clean_segs = []
+    
+    for seg in sorted_segs:
+        start = float(seg["start"])
+        end = float(seg["end"])
+        text = seg.get("text", "").strip()
+        
+        if not text:
+            continue
+            
+        if end <= start:
+            end = start + min_duration
+            
+        if clean_segs:
+            prev_end = clean_segs[-1]["end"]
+            if start < prev_end:
+                if prev_end > start:
+                    clean_segs[-1]["end"] = max(clean_segs[-1]["start"] + min_duration, start - min_gap)
+                if start < clean_segs[-1]["end"] + min_gap:
+                    start = clean_segs[-1]["end"] + min_gap
+                    end = max(start + min_duration, end)
+                    
+        clean_segs.append({
+            "start": round(start, 3),
+            "end": round(max(end, start + min_duration), 3),
+            "text": text,
+            "words": seg.get("words", [])
+        })
+        
+    return clean_segs
+
+def split_cjk_text(text, max_chars=20):
+    """Tách đoạn chữ tượng hình tiếng Nhật (ja) / tiếng Trung (zh) không có dấu cách."""
+    puncts = set("、。！？；：\n,.!?:;")
+    chunks = []
+    curr = []
+    for ch in text:
+        curr.append(ch)
+        if ch in puncts or len(curr) >= max_chars:
+            chunks.append("".join(curr).strip())
+            curr = []
+    if curr:
+        chunks.append("".join(curr).strip())
+    return [c for c in chunks if c]
+
+def split_segment_with_words(seg, max_words=13):
+    """Sử dụng trực tiếp Word Timestamps của Whisper để canh mốc từng mili-giây chuẩn xác."""
+    words = seg.get("words", [])
+    if not words or len(words) <= max_words:
+        return [{"start": seg["start"], "end": seg["end"], "text": seg["text"]}]
+        
+    chunks = []
+    curr_words = []
+    
+    for w in words:
+        curr_words.append(w)
+        word_str = w["word"].strip()
+        ends_with_punct = bool(word_str and word_str[-1] in (',', '.', '?', '!', ';', ':', '—', '…', '¿', '¡', '，', '。', '？', '！', '、', '；', '：'))
+        
+        if len(curr_words) >= max_words or (ends_with_punct and len(curr_words) >= max(3, max_words - 4)):
+            c_text = " ".join(cw["word"].strip() for cw in curr_words).strip()
+            chunks.append({
+                "start": curr_words[0]["start"],
+                "end": curr_words[-1]["end"],
+                "text": c_text
+            })
+            curr_words = []
+            
+    if curr_words:
+        c_text = " ".join(cw["word"].strip() for cw in curr_words).strip()
+        chunks.append({
+            "start": curr_words[0]["start"],
+            "end": curr_words[-1]["end"],
+            "text": c_text
+        })
+        
+    return chunks
 
 def clean_word(word):
     import re
@@ -577,6 +660,42 @@ def split_segments_by_words(segments, max_words=13):
             
     return new_segments
 
+def split_segments_adaptive(segments, max_words=13, language=None):
+    """Bộ tách phân đoạn đa ngôn ngữ thích ứng thông minh (Adaptive Multilingual Segmenter)."""
+    lang = (language or "").strip().lower()
+    all_chunks = []
+    
+    for seg in segments:
+        words_data = seg.get("words", [])
+        # Nếu có word_timestamps trả về từ Colab: ưu tiên sử dụng để chuẩn từng mili-giây
+        if words_data and len(words_data) > 0:
+            all_chunks.extend(split_segment_with_words(seg, max_words=max_words))
+            continue
+            
+        # Nếu là tiếng Nhật hoặc Trung (không dùng dấu cách)
+        if lang in ("ja", "zh"):
+            cjk_chunks = split_cjk_text(seg["text"], max_chars=max(12, max_words * 2))
+            if not cjk_chunks:
+                continue
+            total_duration = float(seg["end"]) - float(seg["start"])
+            total_chars = max(1, sum(len(c) for c in cjk_chunks))
+            curr_t = float(seg["start"])
+            for c in cjk_chunks:
+                c_dur = total_duration * (len(c) / total_chars)
+                all_chunks.append({
+                    "start": curr_t,
+                    "end": min(float(seg["end"]), curr_t + c_dur),
+                    "text": c
+                })
+                curr_t += c_dur
+            continue
+            
+        # Tiếng Việt, Anh, Hàn, Tây Ban Nha, Bồ Đào Nha
+        all_chunks.extend(split_segments_by_words([seg], max_words=max_words))
+        
+    return all_chunks
+
+
 def format_timestamp_srt(seconds: float) -> str:
     ms = int(round((seconds - int(seconds)) * 1000))
     if ms >= 1000: ms = 999
@@ -603,7 +722,7 @@ def export_srt_and_txt(segments, base_output_path):
             
     return srt_path, txt_path
 
-def insert_text_into_draft(project_path, segments, dry_run, log_callback, timeline_offset_us=0, group_subtitles=True):
+def insert_text_into_draft(project_path, segments, dry_run, log_callback, timeline_offset_us=0, group_subtitles=True, font_size=6.0, language="vi"):
     draft_content_path = os.path.join(project_path, "draft_content.json")
     if not os.path.exists(draft_content_path):
         raise FileNotFoundError(f"Không tìm thấy file {draft_content_path}")
@@ -614,7 +733,35 @@ def insert_text_into_draft(project_path, segments, dry_run, log_callback, timeli
     if "materials" not in draft_data: draft_data["materials"] = {}
     if "texts" not in draft_data["materials"]: draft_data["materials"]["texts"] = []
     if "tracks" not in draft_data: draft_data["tracks"] = []
+
+    # 1. Dọn dẹp an toàn các track và vật liệu phụ đề tự động cũ do Tool tạo trước đó
+    tracks_to_keep = []
+    removed_mat_ids = set()
+    for tr in draft_data.get("tracks", []):
+        if tr.get("type") == "text":
+            is_sub_track = False
+            for s in tr.get("segments", []):
+                mid = s.get("material_id")
+                for t_mat in draft_data["materials"].get("texts", []):
+                    if t_mat.get("id") == mid and (t_mat.get("type") == "subtitle" or bool(t_mat.get("group_id"))):
+                        is_sub_track = True
+                        break
+                if is_sub_track:
+                    break
+            if is_sub_track:
+                for s in tr.get("segments", []):
+                    if s.get("material_id"):
+                        removed_mat_ids.add(s["material_id"])
+                continue # Bỏ track cũ này
+        tracks_to_keep.append(tr)
         
+    draft_data["tracks"] = tracks_to_keep
+    if removed_mat_ids and "texts" in draft_data["materials"]:
+        draft_data["materials"]["texts"] = [
+            m for m in draft_data["materials"]["texts"] if m.get("id") not in removed_mat_ids
+        ]
+        
+    # 2. Tạo duy nhất 1 Track text sạch sẽ
     text_track = {
         "id": str(uuid.uuid4()).upper(),
         "type": "text",
@@ -627,8 +774,16 @@ def insert_text_into_draft(project_path, segments, dry_run, log_callback, timeli
     draft_data["tracks"].append(text_track)
         
     inserted_count = 0
-    shared_group_id = f"vi-VN_{int(time.time() * 1000)}" if group_subtitles else ""
+    locale_map = {
+        "vi": "vi-VN", "en": "en-US", "ko": "ko-KR", "ja": "ja-JP",
+        "es": "es-ES", "pt": "pt-PT", "pt-BR": "pt-BR", "zh": "zh-CN"
+    }
+    clean_lang = (language or "vi").strip()
+    locale_prefix = locale_map.get(clean_lang, "vi-VN")
+    shared_group_id = f"{locale_prefix}_{int(time.time() * 1000)}" if group_subtitles else ""
     font_path = get_capcut_font_path()
+    fs_val = float(font_size) if font_size else 6.0
+    text_size_val = int(round(fs_val * 2))
     
     for i, seg in enumerate(segments):
         start_sec = seg["start"]
@@ -643,7 +798,7 @@ def insert_text_into_draft(project_path, segments, dry_run, log_callback, timeli
         
         content_obj = {
             "styles": [{"fill": {"alpha": 1.0, "content": {"render_type": "solid", "solid": {"color": [1.0, 1.0, 1.0]}}},
-                        "font": {"id": "", "path": font_path}, "range": [0, len(text_content_wrapped)], "size": 15.0, "useLetterColor": True}],
+                        "font": {"id": "", "path": font_path}, "range": [0, len(text_content_wrapped)], "size": fs_val, "useLetterColor": True}],
             "text": text_content_wrapped
         }
         content_json_str = json.dumps(content_obj, ensure_ascii=False)
@@ -654,11 +809,11 @@ def insert_text_into_draft(project_path, segments, dry_run, log_callback, timeli
             "caption_template_info": {"category_id": "", "category_name": "", "effect_id": "", "is_new": False, "path": "", "request_id": "", "resource_id": "", "resource_name": "", "third_resource_id": ""},
             "check_flag": 7, "combo_info": {"text_templates": []}, "content": content_json_str,
             "font_category_id": "", "font_category_name": "", "font_id": "", "font_name": "",
-            "font_path": font_path, "font_resource_id": "", "font_size": 15.0, "font_title": "none", "font_url": "", "fonts": [],
+            "font_path": font_path, "font_resource_id": "", "font_size": fs_val, "font_title": "none", "font_url": "", "fonts": [],
             "global_alpha": 1.0, "group_id": shared_group_id, "has_shadow": False, "id": text_material_id, "initial_scale": 1.0, "is_rich_text": False,
             "line_feed": 1, "line_spacing": 0.02, "name": "", "operation_type": 0, "recognize_model": "", "recognize_task_id": "",
             "recognize_text": text_content_wrapped, "recognize_type": 0, "style_name": "", "sub_type": 0, "subtitle_id": text_material_id,
-            "text_alpha": 1.0, "text_color": "#FFFFFF", "text_size": 30, "type": "subtitle" if group_subtitles else "text", "typesetting": 0, "use_effect_default_color": False
+            "text_alpha": 1.0, "text_color": "#FFFFFF", "text_size": text_size_val, "type": "subtitle" if group_subtitles else "text", "typesetting": 0, "use_effect_default_color": False
         }
         track_segment = {
             "id": segment_uuid, "material_id": text_material_id,
@@ -774,6 +929,7 @@ class CapCutBatchStudioApp(tk.Tk):
         self.var_drafts_dir = tk.StringVar(value=self.config.get("drafts_dir", ""))
         self.var_language = tk.StringVar(value=self.config.get("language", "Tự động nhận diện"))
         self.var_max_words = tk.IntVar(value=self.config.get("max_words", 13))
+        self.var_font_size = tk.DoubleVar(value=self.config.get("font_size", 6.0))
         self.var_group_sub = tk.BooleanVar(value=self.config.get("group_subtitles", True))
         self.var_output_dir = tk.StringVar(value=self.config.get("output_dir", ""))
         
@@ -786,10 +942,13 @@ class CapCutBatchStudioApp(tk.Tk):
         self.lang_map = {
             "Tự động nhận diện": None,
             "Tiếng Việt (vi)": "vi",
-            "Tiếng Anh (en)": "en",
-            "Tiếng Trung (zh)": "zh",
             "Tiếng Hàn (ko)": "ko",
-            "Tiếng Nhật (ja)": "ja"
+            "Tiếng Nhật (ja)": "ja",
+            "Tiếng Anh (en)": "en",
+            "Tiếng Tây Ban Nha (es)": "es",
+            "Tiếng Bồ Đào Nha (pt)": "pt",
+            "Tiếng Bồ Đào Nha - Brazil (pt-BR)": "pt-BR",
+            "Tiếng Trung (zh)": "zh"
         }
         
         self._init_styles()
@@ -973,12 +1132,16 @@ class CapCutBatchStudioApp(tk.Tk):
         row_cfg.pack(fill=tk.X, pady=(0, 4))
         
         tk.Label(row_cfg, text="Ngôn ngữ voice:", font=("Segoe UI", 9), fg=self.fg_main, bg=self.bg_card).grid(row=0, column=0, sticky=tk.W, pady=2)
-        cb_lang = ttk.Combobox(row_cfg, textvariable=self.var_language, values=list(self.lang_map.keys()), state="readonly", width=18, font=("Segoe UI", 9))
-        cb_lang.grid(row=0, column=1, sticky=tk.W, padx=8, pady=2)
+        cb_lang = ttk.Combobox(row_cfg, textvariable=self.var_language, values=list(self.lang_map.keys()), state="readonly", width=22, font=("Segoe UI", 9))
+        cb_lang.grid(row=0, column=1, sticky=tk.W, padx=6, pady=2)
         
-        tk.Label(row_cfg, text="Giới hạn từ/đoạn:", font=("Segoe UI", 9), fg=self.fg_main, bg=self.bg_card).grid(row=0, column=2, sticky=tk.W, padx=(10, 0), pady=2)
-        sb_words = tk.Spinbox(row_cfg, from_=1, to=100, textvariable=self.var_max_words, width=6, bg=self.bg_card_inner, fg=self.fg_main, bd=1, relief=tk.SOLID, font=("Segoe UI", 9))
-        sb_words.grid(row=0, column=3, sticky=tk.W, padx=6, pady=2)
+        tk.Label(row_cfg, text="Giới hạn từ:", font=("Segoe UI", 9), fg=self.fg_main, bg=self.bg_card).grid(row=0, column=2, sticky=tk.W, padx=(8, 0), pady=2)
+        sb_words = tk.Spinbox(row_cfg, from_=1, to=100, textvariable=self.var_max_words, width=5, bg=self.bg_card_inner, fg=self.fg_main, bd=1, relief=tk.SOLID, font=("Segoe UI", 9))
+        sb_words.grid(row=0, column=3, sticky=tk.W, padx=4, pady=2)
+        
+        tk.Label(row_cfg, text="Cỡ chữ:", font=("Segoe UI", 9), fg=self.fg_main, bg=self.bg_card).grid(row=0, column=4, sticky=tk.W, padx=(8, 0), pady=2)
+        sb_font_size = tk.Spinbox(row_cfg, from_=1.0, to=30.0, increment=0.5, textvariable=self.var_font_size, width=5, bg=self.bg_card_inner, fg=self.fg_main, bd=1, relief=tk.SOLID, font=("Segoe UI", 9))
+        sb_font_size.grid(row=0, column=5, sticky=tk.W, padx=4, pady=2)
         
         # Chế độ phụ đề CapCut
         row_mode = tk.Frame(card_sub_opts, bg=self.bg_card)
@@ -1287,6 +1450,7 @@ class CapCutBatchStudioApp(tk.Tk):
         language_display = self.var_language.get()
         language_code = self.lang_map.get(language_display)
         max_words = self.var_max_words.get()
+        font_size = self.var_font_size.get()
         group_sub = self.var_group_sub.get()
         
         def _safe_update(fn):
@@ -1332,15 +1496,34 @@ class CapCutBatchStudioApp(tk.Tk):
                 audio_target = candidates[0]["path"]
                 offset_us = candidates[0]["offset_us"]
                     
-                # 2. Gửi sang Colab Large-v3
+                # 2. Gửi sang Colab Large-v3 GPU
                 raw_segments = transcribe_audio_colab(colab_url, audio_target, language_code, self.log, stop_event=self.stop_event)
                 
-                # 3. Hậu xử lý từ ghép tiếng Việt & dấu câu
-                segments = split_segments_by_words(raw_segments, max_words=max_words)
+                # 3. Bộ lọc ảo giác & vòng lặp từ vô tận (Anti-Hallucination)
+                filtered_segments = filter_hallucinations_and_loops(raw_segments, language=language_code)
+                if len(filtered_segments) < len(raw_segments):
+                    self.log(f"  -> Đã lọc bỏ {len(raw_segments) - len(filtered_segments)} đoạn ảo giác / lặp từ rác!")
                 
-                # 4. Ghi trực tiếp vào draft_content.json của CapCut
-                inserted = insert_text_into_draft(path, segments, dry_run=False, log_callback=self.log, timeline_offset_us=offset_us, group_subtitles=group_sub)
-                self.log(f"  -> Đã chèn {inserted} đoạn phụ đề vào dự án CapCut!")
+                # 4. Tách đoạn thông minh thích ứng theo ngôn ngữ & Word Timestamps chuẩn xác
+                segments = split_segments_adaptive(filtered_segments, max_words=max_words, language=language_code)
+                
+                # 5. Khử đè layer (Đảm bảo 100% không trùng mốc thời gian, duy trì 1 Track duy nhất)
+                final_segments = reconcile_segment_overlaps(segments)
+                
+                # 6. Ghi trực tiếp vào draft_content.json của CapCut (chuẩn Cỡ chữ & dọn sạch track cũ)
+                inserted = insert_text_into_draft(
+                    path, final_segments, dry_run=False, log_callback=self.log,
+                    timeline_offset_us=offset_us, group_subtitles=group_sub,
+                    font_size=font_size, language=language_code
+                )
+                self.log(f"  -> Đã chèn {inserted} đoạn phụ đề (Cỡ chữ: {font_size}) vào duy nhất 1 Track CapCut!")
+                
+                # 7. Tự động xuất file .srt và .txt trong thư mục dự án
+                try:
+                    srt_p, txt_p = export_srt_and_txt(final_segments, os.path.join(path, f"{name}_subtitle"))
+                    self.log(f"  -> Đã xuất file phụ đề: {os.path.basename(srt_p)}")
+                except Exception:
+                    pass
                 
                 dur_item = round(time.time() - item_start_t, 1)
                 _safe_update(lambda i=item_id, n=name, ix=idx, d=dur_item: [
@@ -1384,6 +1567,7 @@ class CapCutBatchStudioApp(tk.Tk):
             "drafts_dir": get_default_drafts_dir(),
             "language": "Tự động nhận diện",
             "max_words": 13,
+            "font_size": 6.0,
             "group_subtitles": True,
             "auto_export_srt": True,
             "output_dir": ""
@@ -1408,6 +1592,7 @@ class CapCutBatchStudioApp(tk.Tk):
                 "drafts_dir": self.var_drafts_dir.get(),
                 "language": self.var_language.get(),
                 "max_words": int(self.var_max_words.get()),
+                "font_size": float(self.var_font_size.get()),
                 "group_subtitles": bool(self.var_group_sub.get()),
                 "auto_export_srt": True,
                 "output_dir": self.var_output_dir.get()
