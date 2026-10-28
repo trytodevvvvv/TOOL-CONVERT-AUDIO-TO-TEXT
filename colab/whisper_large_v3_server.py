@@ -31,6 +31,16 @@ if torch.cuda.is_available():
     torch.backends.cuda.matmul.allow_tf32 = True
     torch.backends.cudnn.allow_tf32 = True
 
+# Vá lỗi tương thích giữa PyAV và faster-whisper (loại bỏ metadata_errors trên PyAV 18+)
+try:
+    import av
+    _orig_av_open = av.open
+    def _safe_av_open(*args, metadata_errors=None, **kwargs):
+        return _orig_av_open(*args, **kwargs)
+    av.open = _safe_av_open
+except Exception:
+    pass
+
 # ==============================================================================
 # PHẦN 1: KHỞI TẠO MODEL FASTER-WHISPER LARGE-V3 & BATCHED PIPELINE
 # ==============================================================================

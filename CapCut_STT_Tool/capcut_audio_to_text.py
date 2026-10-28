@@ -117,7 +117,7 @@ def get_colab_run_code():
 # ==============================================================================
 # BƯỚC 1: Cài đặt thư viện Faster-Whisper, FastAPI & Cloudflared
 # ==============================================================================
-!pip install -q faster-whisper fastapi uvicorn pydantic nest-asyncio soundfile
+!pip install -q faster-whisper "av<18" fastapi uvicorn pydantic nest-asyncio soundfile
 !wget -q -nc https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
 !dpkg -i cloudflared-linux-amd64.deb > /dev/null 2>&1
 print("✅ [1/2] Đã cài đặt hoàn tất các gói thư viện!")
@@ -127,6 +127,16 @@ print("✅ [1/2] Đã cài đặt hoàn tất các gói thư viện!")
 # ==============================================================================
 import os, io, time, base64, tempfile, threading, subprocess, re, uuid, gc
 from typing import Optional
+
+# Vá lỗi tương thích giữa PyAV và faster-whisper (loại bỏ metadata_errors trên PyAV 18+)
+try:
+    import av
+    _orig_av_open = av.open
+    def _safe_av_open(*args, metadata_errors=None, **kwargs):
+        return _orig_av_open(*args, **kwargs)
+    av.open = _safe_av_open
+except Exception:
+    pass
 
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 import torch, nest_asyncio, uvicorn
