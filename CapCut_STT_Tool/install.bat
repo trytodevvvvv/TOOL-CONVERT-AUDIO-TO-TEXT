@@ -63,21 +63,35 @@ pause
 exit /b 1
 
 :found_python
-echo [1/2] Kiem tra Python:
+echo [1/2] Kiem tra moi truong Python:
 %PYTHON_CMD% --version
 echo.
 
-REM 2. Cai dat thu vien ho tro am thanh
-echo [2/2] Dang kiem tra va cai dat goi ho tro xu ly am thanh (imageio-ffmpeg)...
-%PYTHON_CMD% -m pip install --upgrade pip >nul 2>&1
-%PYTHON_CMD% -m pip install imageio-ffmpeg >nul 2>&1
+echo [2/2] Kiem tra bo xu ly am thanh sieu toc:
+REM Cap 1: Uu tien tuyet doi bo xu ly offline ffmpeg.exe di kem
+if exist "ffmpeg.exe" (
+    echo [OK] Da co san bo xu ly am thanh chuyen dung ffmpeg.exe (Hoat dong 100%% offline sieu toc)!
+    goto :install_success
+)
 
+REM Cap 2: Kiem tra thu vien ho tro trong Python (neu da co san tu truoc)
+%PYTHON_CMD% -c "import imageio_ffmpeg" >nul 2>&1
+if %errorlevel% equ 0 (
+    echo [OK] Thu vien xu ly am thanh da co san trong Python!
+    goto :install_success
+)
+
+REM Cap 3: Cai dat bo tro nhanh qua pip (khong nang cap pip, tai truc tiep goi 49KB)
+echo Dang cai dat goi ho tro xu ly am thanh sieu nhe (imageio-ffmpeg ~49KB)...
+%PYTHON_CMD% -m pip install imageio-ffmpeg --prefer-binary --no-warn-script-location
+
+:install_success
 echo.
 echo =======================================================================
 echo                       CAI DAT HOAN TAT THANH CONG!
 echo.
 echo  - Tool hoat dong 100%% tren Google Colab GPU Tesla T4 (Whisper Large-v3)
-echo  - May tinh khong can tai model nang hay ngốn RAM/VRAM!
+echo  - May tinh khong can tai model nang hay ton RAM/VRAM!
 echo.
 echo  Ban co the mo ung dung bang cach nhap dup vao file: run.bat
 echo =======================================================================

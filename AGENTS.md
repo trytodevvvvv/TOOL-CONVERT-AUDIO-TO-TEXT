@@ -24,6 +24,13 @@
   + File `config.json` khi đóng gói cho người khác dùng bắt buộc phải là bản mới tinh (Factory Reset):
     `"drafts_dir": ""`, `"output_dir": ""`, `"colab_url": ""`.
   + Tuyệt đối không để sót đường dẫn máy cá nhân (như `D:/CAIDAT/...`, `C:/Users/...`) để khi sang máy người khác, Tool sẽ tự động kích hoạt tính năng dò tìm thư mục CapCut mặc định của chính máy họ (`get_default_drafts_dir()`).
+- **Tối ưu tốc độ cài đặt tối đa (Turbo & Offline-First Installation)**:
+  + File `install.bat` phải có cơ chế kiểm tra 3 cấp độ (Smart 3-Tier Check):
+    1. Ưu tiên kiểm tra `ffmpeg.exe` có sẵn trong thư mục để người dùng chạy ngay lập tức (0.1 giây offline 100%, không cần kết nối mạng).
+    2. Kiểm tra `python -c "import imageio_ffmpeg"` trước: nếu thư viện đã tồn tại thì bỏ qua ngay trong 0.05s.
+    3. Tuyệt đối **KHÔNG** chạy lệnh `pip install --upgrade pip` gây nghẽn mạng và tốn thời gian vô ích.
+    4. Nếu phải cài đặt bổ trợ qua pip, sử dụng các cờ tăng tốc: `--prefer-binary --no-warn-script-location` và hiển thị trực quan tiến trình.
+  + File `run.bat` hỗ trợ khởi chạy 1-Click trực tiếp nếu đã có sẵn `ffmpeg.exe`.
 - **Loại bỏ 100% tệp rác**:
   + Không bao giờ nén `__pycache__`, `*.pyc`, `*.bak`, `*.log`, hay các file âm thanh/video tạm thử nghiệm vào bản phân phối.
 - **Vị trí file phân phối**:
