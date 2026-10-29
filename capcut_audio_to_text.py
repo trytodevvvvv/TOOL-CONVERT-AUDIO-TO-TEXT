@@ -775,80 +775,200 @@ def split_cjk_text(text, max_chars=20):
         chunks.append("".join(curr).strip())
     return [c for c in chunks if c]
 
-def split_segment_with_words(seg, max_words=13):
-    """
-    Tách phân đoạn thông minh bằng Word Timestamps (Sentence-First Splitting):
-    1. Ưu tiên ngắt tại dấu kết thúc câu (. ? ! 。 ？ ！): hết ý câu là ngắt ngay thành 1 phân đoạn độc lập.
-    2. Nếu câu quá dài (> max_words), ngắt phụ tại dấu phẩy hoặc điểm ngắt tự nhiên.
-    """
-    words = seg.get("words", [])
-    if not words:
-        return [{"start": seg["start"], "end": seg["end"], "text": seg["text"]}]
+DANGLING_END_WORDS = {
+    # Loại từ & Mạo từ & Từ chỉ số lượng (không bao giờ đứng cuối dòng)
+    "một", "hai", "ba", "bốn", "năm", "sáu", "bảy", "tám", "chín", "mười",
+    "những", "các", "mọi", "mỗi", "từng", "vài", "mấy", "nhiều", "ít",
+    "cuộc", "cơn", "nỗi", "niềm", "sự", "cái", "con", "người", "chiếc", "bức",
+    "tấm", "đám", "làn", "mẩu", "giọt", "tia", "khúc", "bài", "chùm",
+    # Giới từ & Quan hệ từ
+    "với", "của", "trong", "ngoài", "trên", "dưới", "tại", "từ", "đến", "cho",
+    "về", "bởi", "vì", "do", "bằng", "theo", "giữa", "nhờ", "nhằm", "nơi",
+    # Liên từ & Từ nối
+    "và", "hoặc", "hay", "nhưng", "mà", "nên", "nếu", "thì", "rằng", "là",
+    "để", "như", "dù", "tuy", "mặc", "thay", "liệu", "chứ", "cùng",
+    # Đại từ chỉ định lửng lơ
+    "này", "kia", "đó", "ấy", "nọ"
+}
 
-    SENTENCE_END = ('.', '?', '!', '。', '？', '！')
-    CLAUSE_END = (',', ';', ':', '—', '…', '，', '、', '；', '：')
-
-    chunks = []
-    curr_words = []
-
-    for idx, w in enumerate(words):
-        curr_words.append(w)
-        word_str = w["word"].strip()
-        if not word_str:
-            continue
-        
-        last_char = word_str[-1]
-        is_sentence_end = (last_char in SENTENCE_END)
-        # Bỏ qua trường hợp số thập phân như '3.14'
-        if is_sentence_end and last_char == '.' and re.match(r'^\d+\.$', word_str):
-            if idx + 1 < len(words) and re.match(r'^\d+', words[idx + 1]["word"].strip()):
-                is_sentence_end = False
-
-        is_clause_end = (last_char in CLAUSE_END)
-        
-        should_split = False
-        if is_sentence_end:
-            should_split = True
-        elif is_clause_end and len(curr_words) >= max(4, max_words - 4):
-            should_split = True
-        elif len(curr_words) >= max_words:
-            should_split = True
-
-        if should_split:
-            c_text = " ".join(cw["word"].strip() for cw in curr_words).strip()
-            if c_text:
-                chunks.append({
-                    "start": curr_words[0]["start"],
-                    "end": curr_words[-1]["end"],
-                    "text": c_text
-                })
-            curr_words = []
-
-    if curr_words:
-        c_text = " ".join(cw["word"].strip() for cw in curr_words).strip()
-        if c_text:
-            chunks.append({
-                "start": curr_words[0]["start"],
-                "end": curr_words[-1]["end"],
-                "text": c_text
-            })
-
-    return chunks if chunks else [{"start": seg["start"], "end": seg["end"], "text": seg["text"]}]
+DANGLING_START_WORDS = {
+    "hơn", "nhỉ", "nhé", "ạ", "hả", "vậy", "quá", "nữa"
+}
 
 COMMON_COMPOUND_WORDS = {
-    "giông bão", "dông bão", "sóng gió", "đau khổ", "hạnh phúc", "yêu thương",
-    "nhân quả", "nghiệp báo", "bình an", "tự tại", "trí tuệ", "giác ngộ",
-    "từ bi", "vô thường", "luân hồi", "giải thoát", "buông thư", "hiện tại",
-    "quá khứ", "tương lai", "tổn thương", "mệt mỏi", "đau buồn", "thiện lương",
-    "phật pháp", "tu hành", "cuộc sống", "tâm hồn", "tinh thần", "gia đình",
-    "sự nghiệp", "thành công", "thất bại", "sinh tử", "đất trời", "núi sông",
-    "gió sương", "mưa nắng", "ngày đêm", "học tập", "làm việc", "vui vẻ",
-    "phút giây", "giây phút", "miệng cười"
+    # Từ ghép danh từ / loại từ
+    "công sở", "cuộc sống", "phố xá", "vai diễn", "nụ cười", "hành trình", "đời sống",
+    "gia đình", "bạn bè", "con người", "xã hội", "thế giới", "núi sông", "đất trời",
+    "ngày đêm", "gió sương", "mưa nắng", "sóng gió", "giông bão", "dông bão",
+    # Từ ghép cảm xúc / trạng thái
+    "gượng gạo", "hạnh phúc", "bình an", "an ổn", "tự tại", "trí tuệ", "giác ngộ",
+    "từ bi", "vô thường", "luân hồi", "giải thoát", "buông thư", "đau khổ", "mệt mỏi",
+    "đau buồn", "tổn thương", "vui vẻ", "thiện lương", "tâm hồn", "tinh thần",
+    # Từ ghép động từ / hành động
+    "tìm kiếm", "kiếm tiền", "mong cầu", "rũ bỏ", "đối diện", "lao ra", "học tập",
+    "làm việc", "tu hành", "sinh tử", "thành công", "thất bại", "yêu thương",
+    "chia sẻ", "thấu hiểu", "lắng nghe", "chăm sóc", "hy sinh", "bảo vệ",
+    "phát triển", "tiến bộ", "cố gắng", "nỗ lực", "vươn lên", "vượt qua",
+    # Từ ghép tính từ
+    "tròn triệu", "tròn trịa", "rạng rỡ", "ấm áp", "thanh tịnh", "an lạc",
+    "trong sáng", "mênh mông", "bao la", "sâu sắc", "lặng lẽ", "âm thầm",
+    "vội vã", "bận rộn", "vất vả", "gian nan", "khó khăn", "thuận lợi",
+    # Mở rộng các từ ghép tâm lý / triết lý
+    "nhân quả", "nghiệp báo", "phật pháp", "quá khứ", "hiện tại", "tương lai",
+    "phút giây", "giây phút", "miệng cười", "ánh mắt", "trái tim", "tấm lòng",
+    "bản thân", "chính mình", "cuộc đời", "cuộc tình", "cuộc chiến"
 }
 
 def clean_word(word):
     import re
     return re.sub(r'[^\w\s]', '', word).lower().strip()
+
+def score_split_point(words, k):
+    """
+    Chấm điểm mức độ phù hợp để ngắt giữa words[k] và words[k+1].
+    Điểm càng cao -> điểm ngắt càng tự nhiên, tròn ý nghĩa ngữ pháp.
+    """
+    w_curr_str = words[k].get("word", "").strip()
+    w_next_str = words[k + 1].get("word", "").strip()
+    w_curr = clean_word(w_curr_str)
+    w_next = clean_word(w_next_str)
+    
+    score = 0.0
+    
+    # 1. Thưởng khoảng lặng âm thanh (Acoustic Silence Gap)
+    gap = float(words[k + 1].get("start", 0)) - float(words[k].get("end", 0))
+    if gap >= 0.35:
+        score += 90.0
+    elif gap >= 0.20:
+        score += 45.0
+    elif gap >= 0.10:
+        score += 20.0
+        
+    # 2. Thưởng dấu câu
+    last_char = w_curr_str[-1] if w_curr_str else ""
+    if last_char in ('.', '?', '!', '。', '？', '！'):
+        score += 120.0
+    elif last_char in (',', ';', ':', '—', '…', '，', '、', '；', '：'):
+        score += 70.0
+        
+    # 3. Phạt cực nặng nếu rơi vào từ cấm đứng cuối (Dangling End Word)
+    if w_curr in DANGLING_END_WORDS:
+        score -= 220.0
+        
+    # 4. Phạt nặng nếu từ tiếp theo là từ cấm đứng đầu (Dangling Start Word)
+    if w_next in DANGLING_START_WORDS:
+        score -= 150.0
+        
+    # 5. Phạt cực nặng nếu chém đôi từ ghép (Compound Word)
+    compound_2 = f"{w_curr} {w_next}"
+    if compound_2 in COMMON_COMPOUND_WORDS:
+        score -= 300.0
+        
+    # 6. Thưởng tính cân bằng vị trí (ưu tiên ngắt ở vùng giữa 35% - 65%)
+    ratio = (k + 1) / len(words)
+    balance_penalty = abs(ratio - 0.5) * 60.0
+    score -= balance_penalty
+    
+    return score
+
+def split_long_word_chunk(words, max_chars=65, max_duration=5.0):
+    """
+    Chia đệ quy một chuỗi từ dài thành các phân đoạn tự nhiên
+    dựa trên hàm chấm điểm ngữ nghĩa & khoảng lặng âm thanh.
+    """
+    if not words:
+        return []
+        
+    total_text = " ".join(w.get("word", "").strip() for w in words).strip()
+    total_dur = float(words[-1].get("end", 0)) - float(words[0].get("start", 0))
+    
+    if len(total_text) <= max_chars and total_dur <= max_duration:
+        return [{
+            "start": words[0].get("start", 0.0),
+            "end": words[-1].get("end", 0.0),
+            "text": total_text,
+            "words": words
+        }]
+        
+    if len(words) <= 3:
+        return [{
+            "start": words[0].get("start", 0.0),
+            "end": words[-1].get("end", 0.0),
+            "text": total_text,
+            "words": words
+        }]
+        
+    # Quét tất cả các điểm ngắt khả dĩ từ index 1 đến len(words)-2
+    best_k = None
+    best_score = -999999.0
+    
+    for k in range(1, len(words) - 1):
+        sc = score_split_point(words, k)
+        if sc > best_score:
+            best_score = sc
+            best_k = k
+            
+    if best_k is None or best_k <= 0 or best_k >= len(words) - 1:
+        best_k = len(words) // 2
+        
+    left_words = words[:best_k + 1]
+    right_words = words[best_k + 1:]
+    
+    return split_long_word_chunk(left_words, max_chars, max_duration) + \
+           split_long_word_chunk(right_words, max_chars, max_duration)
+
+def split_segment_with_words(seg, max_chars=65, max_duration=5.0):
+    """
+    Tách phân đoạn thông minh bậc cao bằng Word Timestamps (Semantic & Acoustic Framing):
+    1. Quét ngắt tại các dấu kết câu hoặc khoảng lặng âm thanh tự nhiên (>= 0.38s).
+    2. Với các đoạn dài (> max_chars hoặc > max_duration), ngắt tối ưu bằng Best-Boundary Scoring.
+    """
+    words = seg.get("words", [])
+    if not words:
+        return [{"start": seg["start"], "end": seg["end"], "text": seg.get("text", "").strip()}]
+        
+    import re
+    SENTENCE_END = ('.', '?', '!', '。', '？', '！')
+    
+    initial_chunks = []
+    curr_chunk = []
+    
+    for idx, w in enumerate(words):
+        curr_chunk.append(w)
+        word_str = w.get("word", "").strip()
+        if not word_str:
+            continue
+            
+        last_char = word_str[-1]
+        is_sent_end = (last_char in SENTENCE_END)
+        if is_sent_end and last_char == '.' and re.match(r'^\d+\.$', word_str):
+            if idx + 1 < len(words) and re.match(r'^\d+', words[idx + 1].get("word", "").strip()):
+                is_sent_end = False
+                
+        # Kiểm tra khoảng lặng âm thanh (Speech Pause Gap)
+        has_pause = False
+        if idx + 1 < len(words):
+            gap = float(words[idx + 1].get("start", 0)) - float(w.get("end", 0))
+            w_curr = clean_word(word_str)
+            # Ngắt khi có khoảng lặng rõ rệt (>= 0.38s) và không phải từ cấm đứng cuối
+            if gap >= 0.38 and w_curr not in DANGLING_END_WORDS and len(curr_chunk) >= 4:
+                has_pause = True
+                
+        if is_sent_end or has_pause:
+            initial_chunks.append(curr_chunk)
+            curr_chunk = []
+            
+    if curr_chunk:
+        initial_chunks.append(curr_chunk)
+        
+    final_segments = []
+    for chunk in initial_chunks:
+        if not chunk:
+            continue
+        sub_segs = split_long_word_chunk(chunk, max_chars=max_chars, max_duration=max_duration)
+        final_segments.extend(sub_segs)
+        
+    return final_segments
 
 def wrap_subtitle_2lines(text, max_chars_per_line=36):
     """
@@ -857,6 +977,7 @@ def wrap_subtitle_2lines(text, max_chars_per_line=36):
     - Nếu câu ngắn (<= max_chars_per_line): Hiển thị 1 dòng duy nhất thanh thoát.
     - Nếu câu dài (> max_chars_per_line): Tự động tìm vị trí khoảng trắng gần 50% độ dài
       nhất để chia đều thành 2 dòng cân đối (Balanced Wrap), không bao giờ để chữ thừa rớt xuống dòng 3.
+    - Bảo vệ ngữ nghĩa: Không ngắt dòng sau từ cấm đứng cuối hoặc giữa từ ghép.
     """
     clean = text.strip()
     if not clean:
@@ -876,8 +997,18 @@ def wrap_subtitle_2lines(text, max_chars_per_line=36):
         if i > 0:
             curr_len += 1
         diff = abs(curr_len - target_mid)
+        # Thưởng nếu ngắt tại dấu câu
         if words[i].endswith((',', '，', '、', ';', ':')):
             diff -= 4.0
+        # Phạt nếu ngắt sau từ cấm đứng cuối dòng
+        w_clean = clean_word(words[i])
+        if w_clean in DANGLING_END_WORDS:
+            diff += 8.0
+        # Phạt nếu chém đôi từ ghép
+        if i + 1 < len(words):
+            w_next_clean = clean_word(words[i + 1])
+            if f"{w_clean} {w_next_clean}" in COMMON_COMPOUND_WORDS:
+                diff += 12.0
         if diff < best_diff:
             best_diff = diff
             best_split_idx = i + 1
@@ -889,118 +1020,70 @@ def wrap_text(text, max_chars=36):
     """Giữ hàm wrap_text tương thích, tự động gọi wrap_subtitle_2lines."""
     return wrap_subtitle_2lines(text, max_chars_per_line=max_chars)
 
-def split_segments_by_words(segments, max_words=13):
+def split_segments_by_words(segments, max_chars=65, max_duration=5.0):
+    """
+    Dự phòng khi không có word_timestamps: Mô phỏng word timestamps và áp dụng
+    thuật toán ngắt ngữ nghĩa thông minh tương tự để bảo vệ trọn vẹn ý nghĩa.
+    """
     new_segments = []
     for seg in segments:
-        words = seg["text"].split()
-        if len(words) <= max_words:
-            new_segments.append(seg)
+        text = seg.get("text", "").strip()
+        words = text.split()
+        if not words:
             continue
-            
-        start_time = seg["start"]
-        end_time = seg["end"]
-        total_duration = end_time - start_time
-        total_words = len(words)
+        start_t = float(seg.get("start", 0))
+        end_t = float(seg.get("end", 0))
+        dur = max(0.1, end_t - start_t)
+        time_per_word = dur / len(words)
         
-        import math
-        num_chunks = math.ceil(total_words / max_words)
-        base_size = total_words // num_chunks
-        rem = total_words % num_chunks
-        
-        chunk_sizes = [base_size + (1 if i < rem else 0) for i in range(num_chunks)]
-        split_indices = []
-        curr = 0
-        for sz in chunk_sizes[:-1]:
-            curr += sz
-            split_indices.append(curr)
+        simulated_words = []
+        curr = start_t
+        for w in words:
+            simulated_words.append({
+                "word": w,
+                "start": round(curr, 3),
+                "end": round(curr + time_per_word, 3)
+            })
+            curr += time_per_word
             
-        # Ưu tiên ngắt tại dấu câu
-        for i in range(len(split_indices)):
-            s_idx = split_indices[i]
-            prev_s = split_indices[i - 1] if i > 0 else 0
-            next_s = split_indices[i + 1] if i < len(split_indices) - 1 else total_words
-            best_adj = None
-            min_dist = 999
-            
-            for adj in range(max(prev_s + 1, s_idx - 3), min(next_s - 1, s_idx + 2) + 1):
-                w = words[adj - 1]
-                if w and w[-1] in (',', '.', '?', '!', ';', ':', '—', '…', '，', '。', '？', '！', '、', '；', '：'):
-                    dist = abs(adj - s_idx)
-                    if (adj - prev_s) <= max_words and (next_s - adj) <= max_words and dist < min_dist:
-                        min_dist = dist
-                        best_adj = adj
-            if best_adj is not None:
-                split_indices[i] = best_adj
-
-        # Tránh cắt đôi từ ghép tiếng Việt
-        for i in range(len(split_indices)):
-            s_idx = split_indices[i]
-            if 0 < s_idx < total_words:
-                compound = f"{clean_word(words[s_idx - 1])} {clean_word(words[s_idx])}"
-                if compound in COMMON_COMPOUND_WORDS:
-                    prev_s = split_indices[i - 1] if i > 0 else 0
-                    next_s = split_indices[i + 1] if i < len(split_indices) - 1 else total_words
-                    if (s_idx + 1 - prev_s) <= max_words:
-                        split_indices[i] = s_idx + 1
-                    elif (next_s - (s_idx - 1)) <= max_words:
-                        split_indices[i] = s_idx - 1
-
-        adj_sizes = []
-        prev = 0
-        for idx in split_indices:
-            adj_sizes.append(idx - prev)
-            prev = idx
-        adj_sizes.append(total_words - prev)
-        
-        curr_w_idx = 0
-        time_per_w = total_duration / total_words
-        for sz in adj_sizes:
-            c_words = words[curr_w_idx : curr_w_idx + sz]
-            c_text = " ".join(c_words)
-            c_start = start_time + curr_w_idx * time_per_w
-            c_end = start_time + (curr_w_idx + sz) * time_per_w
-            if c_end > end_time or (curr_w_idx + sz) == total_words:
-                c_end = end_time
-            new_segments.append({"start": c_start, "end": c_end, "text": c_text})
-            curr_w_idx += sz
-            
+        sub_segs = split_long_word_chunk(simulated_words, max_chars=max_chars, max_duration=max_duration)
+        new_segments.extend(sub_segs)
     return new_segments
 
-def split_segments_adaptive(segments, max_words=13, language=None):
-    """Bộ tách phân đoạn đa ngôn ngữ thích ứng thông minh (Adaptive Multilingual Segmenter)."""
+def split_segments_adaptive(segments, max_words=None, language=None):
+    """Bộ tách phân đoạn đa ngôn ngữ thích ứng ngữ nghĩa thông minh (Semantic Multilingual Segmenter)."""
     lang = (language or "").strip().lower()
     all_chunks = []
     
     for seg in segments:
         words_data = seg.get("words", [])
-        # Nếu có word_timestamps trả về từ Colab: ưu tiên sử dụng để chuẩn từng mili-giây
+        # Nếu có word_timestamps trả về từ Colab: ưu tiên sử dụng
         if words_data and len(words_data) > 0:
-            all_chunks.extend(split_segment_with_words(seg, max_words=max_words))
+            all_chunks.extend(split_segment_with_words(seg))
             continue
             
         # Nếu là tiếng Nhật hoặc Trung (không dùng dấu cách)
         if lang in ("ja", "zh"):
-            cjk_chunks = split_cjk_text(seg["text"], max_chars=max(12, max_words * 2))
+            cjk_chunks = split_cjk_text(seg.get("text", ""), max_chars=20)
             if not cjk_chunks:
                 continue
-            total_duration = float(seg["end"]) - float(seg["start"])
+            total_duration = float(seg.get("end", 0)) - float(seg.get("start", 0))
             total_chars = max(1, sum(len(c) for c in cjk_chunks))
-            curr_t = float(seg["start"])
+            curr_t = float(seg.get("start", 0))
             for c in cjk_chunks:
                 c_dur = total_duration * (len(c) / total_chars)
                 all_chunks.append({
                     "start": curr_t,
-                    "end": min(float(seg["end"]), curr_t + c_dur),
+                    "end": min(float(seg.get("end", 0)), curr_t + c_dur),
                     "text": c
                 })
                 curr_t += c_dur
             continue
             
         # Tiếng Việt, Anh, Hàn, Tây Ban Nha, Bồ Đào Nha
-        all_chunks.extend(split_segments_by_words([seg], max_words=max_words))
+        all_chunks.extend(split_segments_by_words([seg]))
         
     return all_chunks
-
 
 def format_timestamp_srt(seconds: float) -> str:
     ms = int(round((seconds - int(seconds)) * 1000))
@@ -1476,29 +1559,25 @@ class CapCutBatchStudioApp(tk.Tk):
         cb_gpu_power = ttk.Combobox(grid_ai_gpu, textvariable=self.var_gpu_power, values=list(self.gpu_power_map.keys()), state="readonly", font=("Segoe UI", 9))
         cb_gpu_power.grid(row=0, column=3, sticky="ew", padx=(6, 0), pady=2)
         
-        # Hàng 2: Thông số phụ đề CapCut (Cỡ chữ, Từ/câu, Lệch Sync, Kiểu Sub)
+        # Hàng 2: Thông số phụ đề CapCut (Cỡ chữ, Lệch Sync, Kiểu Sub)
         row_sub_opts = tk.Frame(card_sub_opts, bg=self.bg_card)
         row_sub_opts.pack(fill=tk.X, pady=(0, 6))
         
         tk.Label(row_sub_opts, text="Cỡ chữ:", font=("Segoe UI", 9, "bold"), fg=self.fg_main, bg=self.bg_card).pack(side=tk.LEFT, padx=(0, 4))
         sb_font_size = tk.Spinbox(row_sub_opts, from_=1.0, to=30.0, increment=0.5, textvariable=self.var_font_size, width=4, bg=self.bg_card_inner, fg=self.fg_main, bd=1, relief=tk.SOLID, font=("Segoe UI", 9))
-        sb_font_size.pack(side=tk.LEFT, padx=(0, 10))
-        
-        tk.Label(row_sub_opts, text="Từ/câu:", font=("Segoe UI", 9, "bold"), fg=self.fg_main, bg=self.bg_card).pack(side=tk.LEFT, padx=(0, 4))
-        sb_words = tk.Spinbox(row_sub_opts, from_=1, to=100, textvariable=self.var_max_words, width=4, bg=self.bg_card_inner, fg=self.fg_main, bd=1, relief=tk.SOLID, font=("Segoe UI", 9))
-        sb_words.pack(side=tk.LEFT, padx=(0, 10))
+        sb_font_size.pack(side=tk.LEFT, padx=(0, 14))
         
         tk.Label(row_sub_opts, text="Lệch Sync:", font=("Segoe UI", 9, "bold"), fg=self.fg_main, bg=self.bg_card).pack(side=tk.LEFT, padx=(0, 4))
         sb_sync = tk.Spinbox(row_sub_opts, from_=-1000, to=1000, increment=50, textvariable=self.var_sync_offset_ms, width=5, bg=self.bg_card_inner, fg=self.accent_cyan, bd=1, relief=tk.SOLID, font=("Segoe UI", 9, "bold"))
         sb_sync.pack(side=tk.LEFT, padx=(0, 2))
-        tk.Label(row_sub_opts, text="ms", font=("Segoe UI", 8), fg="#94A3B8", bg=self.bg_card).pack(side=tk.LEFT, padx=(0, 12))
+        tk.Label(row_sub_opts, text="ms", font=("Segoe UI", 8), fg="#94A3B8", bg=self.bg_card).pack(side=tk.LEFT, padx=(0, 16))
         
-        tk.Label(row_sub_opts, text="Kiểu:", font=("Segoe UI", 9, "bold"), fg=self.fg_main, bg=self.bg_card).pack(side=tk.LEFT, padx=(0, 6))
-        r_group = tk.Radiobutton(row_sub_opts, text="Nhóm Sub", variable=self.var_group_sub, value=True,
+        tk.Label(row_sub_opts, text="Kiểu phụ đề:", font=("Segoe UI", 9, "bold"), fg=self.fg_main, bg=self.bg_card).pack(side=tk.LEFT, padx=(0, 6))
+        r_group = tk.Radiobutton(row_sub_opts, text="Nhóm Sub (Đồng bộ)", variable=self.var_group_sub, value=True,
                                  bg=self.bg_card, fg=self.accent_green, activebackground=self.bg_card, selectcolor=self.bg_card_inner, font=("Segoe UI", 9))
-        r_group.pack(side=tk.LEFT, padx=(0, 8))
+        r_group.pack(side=tk.LEFT, padx=(0, 10))
         
-        r_nogroup = tk.Radiobutton(row_sub_opts, text="Rời", variable=self.var_group_sub, value=False,
+        r_nogroup = tk.Radiobutton(row_sub_opts, text="Văn bản rời", variable=self.var_group_sub, value=False,
                                    bg=self.bg_card, fg=self.accent_orange, activebackground=self.bg_card, selectcolor=self.bg_card_inner, font=("Segoe UI", 9))
         r_nogroup.pack(side=tk.LEFT)
         
@@ -1862,8 +1941,8 @@ class CapCutBatchStudioApp(tk.Tk):
                 if len(filtered_segments) < len(raw_segments):
                     self.log(f"  -> Đã lọc bỏ {len(raw_segments) - len(filtered_segments)} đoạn ảo giác / lặp từ rác!")
                 
-                # 4. Tách đoạn thông minh thích ứng theo ngôn ngữ & Word Timestamps chuẩn xác
-                segments = split_segments_adaptive(filtered_segments, max_words=max_words, language=language_code)
+                # 4. Tách đoạn ngữ nghĩa thông minh thích ứng theo ngôn ngữ & Voice Pauses
+                segments = split_segments_adaptive(filtered_segments, language=language_code)
                 
                 # 4b. Tinh chỉnh đồng bộ âm thanh - phụ đề (Lead-in Sync Offset)
                 sync_offset_sec = float(self.var_sync_offset_ms.get()) / 1000.0
