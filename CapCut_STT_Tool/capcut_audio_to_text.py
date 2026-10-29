@@ -598,7 +598,13 @@ def transcribe_audio_colab(colab_url, audio_path, language_code, log_callback, b
             result = status_data.get("result", {})
             proc_time = result.get("processing_time_sec", round(time.time() - start_time, 2))
             segments = result.get("segments", [])
-            log_callback(f"  -> GPU Tesla T4 hoàn thành trong {proc_time}s! Nhận diện {len(segments)} đoạn phụ đề.")
+            detected_lang = result.get("language")
+            if detected_lang:
+                for s in segments:
+                    if "language" not in s:
+                        s["language"] = detected_lang
+            lang_label = f"Ngôn ngữ: {detected_lang} | " if detected_lang else ""
+            log_callback(f"  -> GPU Tesla T4 hoàn thành trong {proc_time}s! {lang_label}Nhận diện {len(segments)} đoạn phụ đề.")
             try:
                 clear_req = urllib.request.Request(f"{colab_url.rstrip('/')}/task_clear/{task_id}", data=b"{}", headers={"Content-Type": "application/json"}, method="POST")
                 urllib.request.urlopen(clear_req, timeout=5)
@@ -775,59 +781,186 @@ def split_cjk_text(text, max_chars=20):
         chunks.append("".join(curr).strip())
     return [c for c in chunks if c]
 
-DANGLING_END_WORDS = {
-    # Loại từ & Mạo từ & Từ chỉ số lượng (không bao giờ đứng cuối dòng)
-    "một", "hai", "ba", "bốn", "năm", "sáu", "bảy", "tám", "chín", "mười",
-    "những", "các", "mọi", "mỗi", "từng", "vài", "mấy", "nhiều", "ít",
-    "cuộc", "cơn", "nỗi", "niềm", "sự", "cái", "con", "người", "chiếc", "bức",
-    "tấm", "đám", "làn", "mẩu", "giọt", "tia", "khúc", "bài", "chùm",
-    # Giới từ & Quan hệ từ
-    "với", "của", "trong", "ngoài", "trên", "dưới", "tại", "từ", "đến", "cho",
-    "về", "bởi", "vì", "do", "bằng", "theo", "giữa", "nhờ", "nhằm", "nơi",
-    # Liên từ & Từ nối
-    "và", "hoặc", "hay", "nhưng", "mà", "nên", "nếu", "thì", "rằng", "là",
-    "để", "như", "dù", "tuy", "mặc", "thay", "liệu", "chứ", "cùng",
-    # Đại từ chỉ định lửng lơ
-    "này", "kia", "đó", "ấy", "nọ"
-}
+LANGUAGE_GRAMMAR_GUARDS = {
+    # 1. TIẾNG VIỆT (vi)
+    "vi": {
+        "dangling_end": {
+            "một", "hai", "ba", "bốn", "năm", "sáu", "bảy", "tám", "chín", "mười",
+            "những", "các", "mọi", "mỗi", "từng", "vài", "mấy", "nhiều", "ít",
+            "cuộc", "cơn", "nỗi", "niềm", "sự", "cái", "con", "người", "chiếc", "bức",
+            "tấm", "đám", "làn", "mẩu", "giọt", "tia", "khúc", "bài", "chùm",
+            "với", "của", "trong", "ngoài", "trên", "dưới", "tại", "từ", "đến", "cho",
+            "về", "bởi", "vì", "do", "bằng", "theo", "giữa", "nhờ", "nhằm", "nơi",
+            "và", "hoặc", "hay", "nhưng", "mà", "nên", "nếu", "thì", "rằng", "là",
+            "để", "như", "dù", "tuy", "mặc", "thay", "liệu", "chứ", "cùng",
+            "này", "kia", "đó", "ấy", "nọ"
+        },
+        "dangling_start": {"hơn", "nhỉ", "nhé", "ạ", "hả", "vậy", "quá", "nữa"},
+        "compounds": {
+            "công sở", "cuộc sống", "phố xá", "vai diễn", "nụ cười", "hành trình", "đời sống",
+            "gia đình", "bạn bè", "con người", "xã hội", "thế giới", "núi sông", "đất trời",
+            "ngày đêm", "gió sương", "mưa nắng", "sóng gió", "giông bão", "dông bão",
+            "gượng gạo", "hạnh phúc", "bình an", "an ổn", "tự tại", "trí tuệ", "giác ngộ",
+            "từ bi", "vô thường", "luân hồi", "giải thoát", "buông thư", "đau khổ", "mệt mỏi",
+            "đau buồn", "tổn thương", "vui vẻ", "thiện lương", "tâm hồn", "tinh thần",
+            "tìm kiếm", "kiếm tiền", "mong cầu", "rũ bỏ", "đối diện", "lao ra", "học tập",
+            "làm việc", "tu hành", "sinh tử", "thành công", "thất bại", "yêu thương",
+            "chia sẻ", "thấu hiểu", "lắng nghe", "chăm sóc", "hy sinh", "bảo vệ",
+            "phát triển", "tiến bộ", "cố gắng", "nỗ lực", "vươn lên", "vượt qua",
+            "tròn triệu", "tròn trịa", "rạng rỡ", "ấm áp", "thanh tịnh", "an lạc",
+            "trong sáng", "mênh mông", "bao la", "sâu sắc", "lặng lẽ", "âm thầm",
+            "vội vã", "bận rộn", "vất vả", "gian nan", "khó khăn", "thuận lợi",
+            "nhân quả", "nghiệp báo", "phật pháp", "quá khứ", "hiện tại", "tương lai",
+            "phút giây", "giây phút", "miệng cười", "ánh mắt", "trái tim", "tấm lòng",
+            "bản thân", "chính mình", "cuộc đời", "cuộc tình", "cuộc chiến"
+        },
+        "max_chars": 65,
+        "max_line_chars": 36
+    },
 
-DANGLING_START_WORDS = {
-    "hơn", "nhỉ", "nhé", "ạ", "hả", "vậy", "quá", "nữa"
-}
+    # 2. TIẾNG ANH (en)
+    "en": {
+        "dangling_end": {
+            "a", "an", "the", "some", "any", "every", "each", "all", "both", "few", "many", "much", "several", "no",
+            "in", "on", "at", "to", "for", "with", "of", "from", "by", "about", "into", "through", "during",
+            "before", "after", "above", "below", "between", "under", "behind", "without", "within", "upon", "against", "towards", "onto",
+            "and", "but", "or", "nor", "so", "yet", "that", "which", "who", "whom", "whose", "because", "although", "since", "unless", "while", "whereas", "if", "than", "whether", "as",
+            "is", "are", "was", "were", "be", "been", "being", "have", "has", "had", "do", "does", "did", "will", "would", "shall", "should", "can", "could", "may", "might", "must",
+            "my", "your", "his", "her", "its", "our", "their", "this", "that", "these", "those"
+        },
+        "dangling_start": {"too", "either", "neither", "though"},
+        "compounds": {
+            "as well as", "in front of", "because of", "in order to", "due to", "such as",
+            "as soon as", "at least", "at most", "each other", "one another", "in terms of", "as long as"
+        },
+        "max_chars": 68,
+        "max_line_chars": 38
+    },
 
-COMMON_COMPOUND_WORDS = {
-    # Từ ghép danh từ / loại từ
-    "công sở", "cuộc sống", "phố xá", "vai diễn", "nụ cười", "hành trình", "đời sống",
-    "gia đình", "bạn bè", "con người", "xã hội", "thế giới", "núi sông", "đất trời",
-    "ngày đêm", "gió sương", "mưa nắng", "sóng gió", "giông bão", "dông bão",
-    # Từ ghép cảm xúc / trạng thái
-    "gượng gạo", "hạnh phúc", "bình an", "an ổn", "tự tại", "trí tuệ", "giác ngộ",
-    "từ bi", "vô thường", "luân hồi", "giải thoát", "buông thư", "đau khổ", "mệt mỏi",
-    "đau buồn", "tổn thương", "vui vẻ", "thiện lương", "tâm hồn", "tinh thần",
-    # Từ ghép động từ / hành động
-    "tìm kiếm", "kiếm tiền", "mong cầu", "rũ bỏ", "đối diện", "lao ra", "học tập",
-    "làm việc", "tu hành", "sinh tử", "thành công", "thất bại", "yêu thương",
-    "chia sẻ", "thấu hiểu", "lắng nghe", "chăm sóc", "hy sinh", "bảo vệ",
-    "phát triển", "tiến bộ", "cố gắng", "nỗ lực", "vươn lên", "vượt qua",
-    # Từ ghép tính từ
-    "tròn triệu", "tròn trịa", "rạng rỡ", "ấm áp", "thanh tịnh", "an lạc",
-    "trong sáng", "mênh mông", "bao la", "sâu sắc", "lặng lẽ", "âm thầm",
-    "vội vã", "bận rộn", "vất vả", "gian nan", "khó khăn", "thuận lợi",
-    # Mở rộng các từ ghép tâm lý / triết lý
-    "nhân quả", "nghiệp báo", "phật pháp", "quá khứ", "hiện tại", "tương lai",
-    "phút giây", "giây phút", "miệng cười", "ánh mắt", "trái tim", "tấm lòng",
-    "bản thân", "chính mình", "cuộc đời", "cuộc tình", "cuộc chiến"
+    # 3. TIẾNG TÂY BAN NHA (es)
+    "es": {
+        "dangling_end": {
+            "el", "la", "los", "las", "un", "una", "unos", "unas", "lo",
+            "de", "del", "a", "al", "en", "con", "por", "para", "sobre", "sin", "tras", "hasta", "desde", "hacia", "entre", "contra", "bajo", "ante", "según", "mediante",
+            "y", "e", "o", "u", "pero", "sino", "porque", "que", "si", "aunque", "como", "cuando", "donde", "mientras", "ni", "pues", "ya",
+            "mi", "tu", "su", "mis", "tus", "sus", "nuestro", "nuestra", "este", "esta", "estos", "estas", "ese", "esa", "esos", "esas", "aquel", "aquella",
+            "se", "me", "te", "nos", "os", "le", "les", "es", "son", "fue", "era", "hay", "ha", "han"
+        },
+        "dangling_start": {"también", "tampoco"},
+        "compounds": {
+            "a pesar de", "en vez de", "con respecto a", "gracias a", "debido a", "sin embargo", "por lo tanto", "tal como"
+        },
+        "max_chars": 68,
+        "max_line_chars": 38
+    },
+
+    # 4. TIẾNG BỒ ĐÀO NHA & BRAZIL (pt, pt-BR)
+    "pt": {
+        "dangling_end": {
+            "o", "a", "os", "as", "um", "uma", "uns", "umas",
+            "de", "do", "da", "dos", "das", "a", "ao", "à", "aos", "às", "em", "no", "na", "nos", "nas", "com", "por", "pelo", "pela", "pelos", "pelas", "para", "sobre", "sem", "até", "desde", "entre", "contra", "sob", "perante",
+            "e", "ou", "mas", "porém", "porque", "que", "se", "embora", "como", "quando", "onde", "enquanto", "nem", "pois", "contudo", "todavia",
+            "meu", "minha", "meus", "minhas", "seu", "sua", "seus", "suas", "nosso", "nossa", "este", "esta", "estes", "estas", "esse", "essa", "esses", "essas", "aquele", "aquela", "isto", "isso", "aquilo",
+            "se", "me", "te", "nos", "lhe", "lhes", "é", "são", "foi", "era", "há", "tem"
+        },
+        "dangling_start": {"também"},
+        "compounds": {
+            "além disso", "por causa de", "de acordo com", "em vez de", "no entanto", "apesar de", "por isso", "assim como"
+        },
+        "max_chars": 68,
+        "max_line_chars": 38
+    },
+
+    # 5. TIẾNG HÀN (ko)
+    "ko": {
+        "dangling_end": {
+            "이", "그", "저", "어떤", "모든", "각", "여러", "한", "두", "세", "네", "새", "헌", "옛",
+            "그리고", "그러나", "하지만", "그래서", "또는", "그런데", "만약", "비록", "및", "혹은",
+            "너무", "매우", "가장", "아주", "더", "덜", "꼭", "잘", "못", "다", "또", "다시", "아직"
+        },
+        "dangling_start": {"것", "수", "줄", "바", "때", "분", "개", "명", "년", "월", "일"},
+        "compounds": {
+            "대한민국", "우리나라", "전환점이", "뿐만 아니라", "할 수", "수 있다", "수 있는", "것 같다", "에 대해", "에 의해", "을 위해"
+        },
+        "max_chars": 45,
+        "max_line_chars": 24
+    },
+
+    # 6. TIẾNG TRUNG (zh)
+    "zh": {
+        "dangling_end": {
+            "的", "地", "得", "着", "了", "过",
+            "个", "只", "条", "张", "本", "支", "块", "份", "种", "次", "遍", "辆", "艘", "座", "间", "棵",
+            "在", "从", "到", "向", "往", "对", "给", "和", "跟", "与", "同", "因为", "所以", "但是", "而且", "如果", "虽然", "尽管", "即使", "既然", "无论", "不管", "除了", "随着", "根据",
+            "这", "那", "这只", "那个", "这些", "那些", "一", "二", "三", "四", "五", "六", "七", "八", "九", "十", "几", "某"
+        },
+        "dangling_start": set(),
+        "compounds": {
+            "也就是说", "换句话说", "不仅如此", "总而言之", "与此同时", "显而易见", "无论如何", "由此可见"
+        },
+        "max_chars": 28,
+        "max_line_chars": 15
+    },
+
+    # 7. TIẾNG NHẬT (ja)
+    "ja": {
+        "dangling_end": {
+            "この", "その", "あの", "どの", "我が", "お", "ご",
+            "そして", "しかし", "だから", "けれども", "また", "それで", "なぜなら", "もし", "たとえ",
+            "一", "二", "三", "四", "五", "六", "七", "八", "九", "十", "つ", "個", "人", "匹", "本", "枚"
+        },
+        "dangling_start": set(),
+        "compounds": {
+            "したがって", "そのため", "それにもかかわらず", "いわゆる", "言わば", "要するに"
+        },
+        "max_chars": 30,
+        "max_line_chars": 16
+    }
 }
 
 def clean_word(word):
     import re
     return re.sub(r'[^\w\s]', '', word).lower().strip()
 
-def score_split_point(words, k):
+def get_language_guard(language_code):
+    """Lấy bộ quy tắc ngữ pháp bảo vệ theo mã ngôn ngữ."""
+    if not language_code:
+        return LANGUAGE_GRAMMAR_GUARDS["vi"]
+    code = language_code.strip().lower()
+    if code.startswith("pt"):
+        return LANGUAGE_GRAMMAR_GUARDS["pt"]
+    if code.startswith("zh"):
+        return LANGUAGE_GRAMMAR_GUARDS["zh"]
+    if code.startswith("ja"):
+        return LANGUAGE_GRAMMAR_GUARDS["ja"]
+    if code.startswith("ko"):
+        return LANGUAGE_GRAMMAR_GUARDS["ko"]
+    if code.startswith("es"):
+        return LANGUAGE_GRAMMAR_GUARDS["es"]
+    if code.startswith("en"):
+        return LANGUAGE_GRAMMAR_GUARDS["en"]
+    if code.startswith("vi"):
+        return LANGUAGE_GRAMMAR_GUARDS["vi"]
+    return LANGUAGE_GRAMMAR_GUARDS.get(code, LANGUAGE_GRAMMAR_GUARDS["en"])
+
+def join_words(words, language="vi"):
+    """Ghép danh sách từ thành chuỗi hiển thị tự nhiên theo ngôn ngữ."""
+    lang = (language or "").strip().lower()
+    if lang.startswith("ja") or lang.startswith("zh"):
+        return "".join(w.get("word", "").strip() for w in words).strip()
+    return " ".join(w.get("word", "").strip() for w in words).strip()
+
+def score_split_point(words, k, language="vi"):
     """
-    Chấm điểm mức độ phù hợp để ngắt giữa words[k] và words[k+1].
+    Chấm điểm mức độ phù hợp để ngắt giữa words[k] và words[k+1]
+    theo đặc thù ngữ pháp của từng ngôn ngữ.
     Điểm càng cao -> điểm ngắt càng tự nhiên, tròn ý nghĩa ngữ pháp.
     """
+    guard = get_language_guard(language)
+    dangling_end = guard["dangling_end"]
+    dangling_start = guard["dangling_start"]
+    compounds = guard["compounds"]
+
     w_curr_str = words[k].get("word", "").strip()
     w_next_str = words[k + 1].get("word", "").strip()
     w_curr = clean_word(w_curr_str)
@@ -852,16 +985,16 @@ def score_split_point(words, k):
         score += 70.0
         
     # 3. Phạt cực nặng nếu rơi vào từ cấm đứng cuối (Dangling End Word)
-    if w_curr in DANGLING_END_WORDS:
+    if w_curr in dangling_end:
         score -= 220.0
         
     # 4. Phạt nặng nếu từ tiếp theo là từ cấm đứng đầu (Dangling Start Word)
-    if w_next in DANGLING_START_WORDS:
+    if w_next in dangling_start:
         score -= 150.0
         
-    # 5. Phạt cực nặng nếu chém đôi từ ghép (Compound Word)
+    # 5. Phạt cực nặng nếu chém đôi từ ghép / cụm cố định
     compound_2 = f"{w_curr} {w_next}"
-    if compound_2 in COMMON_COMPOUND_WORDS:
+    if compound_2 in compounds:
         score -= 300.0
         
     # 6. Thưởng tính cân bằng vị trí (ưu tiên ngắt ở vùng giữa 35% - 65%)
@@ -871,15 +1004,19 @@ def score_split_point(words, k):
     
     return score
 
-def split_long_word_chunk(words, max_chars=65, max_duration=5.0):
+def split_long_word_chunk(words, max_chars=None, max_duration=5.0, language="vi"):
     """
     Chia đệ quy một chuỗi từ dài thành các phân đoạn tự nhiên
-    dựa trên hàm chấm điểm ngữ nghĩa & khoảng lặng âm thanh.
+    dựa trên hàm chấm điểm ngữ nghĩa & khoảng lặng âm thanh đa ngôn ngữ.
     """
     if not words:
         return []
         
-    total_text = " ".join(w.get("word", "").strip() for w in words).strip()
+    guard = get_language_guard(language)
+    if max_chars is None:
+        max_chars = guard["max_chars"]
+        
+    total_text = join_words(words, language=language)
     total_dur = float(words[-1].get("end", 0)) - float(words[0].get("start", 0))
     
     if len(total_text) <= max_chars and total_dur <= max_duration:
@@ -898,12 +1035,11 @@ def split_long_word_chunk(words, max_chars=65, max_duration=5.0):
             "words": words
         }]
         
-    # Quét tất cả các điểm ngắt khả dĩ từ index 1 đến len(words)-2
     best_k = None
     best_score = -999999.0
     
     for k in range(1, len(words) - 1):
-        sc = score_split_point(words, k)
+        sc = score_split_point(words, k, language=language)
         if sc > best_score:
             best_score = sc
             best_k = k
@@ -914,20 +1050,22 @@ def split_long_word_chunk(words, max_chars=65, max_duration=5.0):
     left_words = words[:best_k + 1]
     right_words = words[best_k + 1:]
     
-    return split_long_word_chunk(left_words, max_chars, max_duration) + \
-           split_long_word_chunk(right_words, max_chars, max_duration)
+    return split_long_word_chunk(left_words, max_chars=max_chars, max_duration=max_duration, language=language) + \
+           split_long_word_chunk(right_words, max_chars=max_chars, max_duration=max_duration, language=language)
 
-def split_segment_with_words(seg, max_chars=65, max_duration=5.0):
+def split_segment_with_words(seg, max_chars=None, max_duration=5.0, language="vi"):
     """
-    Tách phân đoạn thông minh bậc cao bằng Word Timestamps (Semantic & Acoustic Framing):
+    Tách phân đoạn thông minh bậc cao bằng Word Timestamps (Semantic & Acoustic Multilingual Framing):
     1. Quét ngắt tại các dấu kết câu hoặc khoảng lặng âm thanh tự nhiên (>= 0.38s).
-    2. Với các đoạn dài (> max_chars hoặc > max_duration), ngắt tối ưu bằng Best-Boundary Scoring.
+    2. Với các đoạn dài (> max_chars hoặc > max_duration), ngắt tối ưu bằng Best-Boundary Scoring theo ngôn ngữ.
     """
     words = seg.get("words", [])
     if not words:
         return [{"start": seg["start"], "end": seg["end"], "text": seg.get("text", "").strip()}]
         
     import re
+    guard = get_language_guard(language)
+    dangling_end = guard["dangling_end"]
     SENTENCE_END = ('.', '?', '!', '。', '？', '！')
     
     initial_chunks = []
@@ -951,7 +1089,7 @@ def split_segment_with_words(seg, max_chars=65, max_duration=5.0):
             gap = float(words[idx + 1].get("start", 0)) - float(w.get("end", 0))
             w_curr = clean_word(word_str)
             # Ngắt khi có khoảng lặng rõ rệt (>= 0.38s) và không phải từ cấm đứng cuối
-            if gap >= 0.38 and w_curr not in DANGLING_END_WORDS and len(curr_chunk) >= 4:
+            if gap >= 0.38 and w_curr not in dangling_end and len(curr_chunk) >= 4:
                 has_pause = True
                 
         if is_sent_end or has_pause:
@@ -965,33 +1103,58 @@ def split_segment_with_words(seg, max_chars=65, max_duration=5.0):
     for chunk in initial_chunks:
         if not chunk:
             continue
-        sub_segs = split_long_word_chunk(chunk, max_chars=max_chars, max_duration=max_duration)
+        sub_segs = split_long_word_chunk(chunk, max_chars=max_chars, max_duration=max_duration, language=language)
         final_segments.extend(sub_segs)
         
     return final_segments
 
-def wrap_subtitle_2lines(text, max_chars_per_line=36):
+def wrap_subtitle_2lines(text, max_chars_per_line=None, language="vi"):
     """
-    Quy tắc Vàng cho phụ đề CapCut:
+    Quy tắc Vàng cho phụ đề CapCut Đa Ngôn Ngữ:
     - KHÔNG BAO GIỜ vượt quá 2 dòng (Tối đa 2 dòng).
-    - Nếu câu ngắn (<= max_chars_per_line): Hiển thị 1 dòng duy nhất thanh thoát.
-    - Nếu câu dài (> max_chars_per_line): Tự động tìm vị trí khoảng trắng gần 50% độ dài
-      nhất để chia đều thành 2 dòng cân đối (Balanced Wrap), không bao giờ để chữ thừa rớt xuống dòng 3.
-    - Bảo vệ ngữ nghĩa: Không ngắt dòng sau từ cấm đứng cuối hoặc giữa từ ghép.
+    - Tự động điều chỉnh độ dài tối đa dòng theo ngôn ngữ (CJK ~15-16 ký tự, La-tinh ~36-38 ký tự).
+    - Cân đối 2 dòng (Balanced Wrap) và bảo vệ không chém đôi từ ghép hay ngắt sau giới từ/mạo từ.
     """
     clean = text.strip()
     if not clean:
         return ""
+        
+    guard = get_language_guard(language)
+    if max_chars_per_line is None:
+        max_chars_per_line = guard["max_line_chars"]
+        
     if len(clean) <= max_chars_per_line:
         return clean
+
+    lang = (language or "").strip().lower()
+    
+    # Với tiếng Nhật & tiếng Trung không dùng khoảng trắng
+    if lang.startswith("ja") or lang.startswith("zh"):
+        puncts = set("、。！？；：，,.!?:;")
+        target_mid = len(clean) // 2
+        best_idx = target_mid
+        best_diff = 999
+        # Tìm vị trí dấu câu gần tâm nhất
+        for i, ch in enumerate(clean):
+            if ch in puncts:
+                diff = abs(i + 1 - target_mid)
+                if diff < best_diff:
+                    best_diff = diff
+                    best_idx = i + 1
+        return f"{clean[:best_idx]}\n{clean[best_idx:]}"
+        
     words = clean.split()
     if len(words) <= 1:
         return clean
+        
     total_len = len(clean)
     target_mid = total_len / 2.0
     best_split_idx = 1
     best_diff = 999.0
     curr_len = 0
+    dangling_end = guard["dangling_end"]
+    compounds = guard["compounds"]
+    
     for i in range(len(words) - 1):
         curr_len += len(words[i])
         if i > 0:
@@ -1002,16 +1165,17 @@ def wrap_subtitle_2lines(text, max_chars_per_line=36):
             diff -= 4.0
         # Phạt nếu ngắt sau từ cấm đứng cuối dòng
         w_clean = clean_word(words[i])
-        if w_clean in DANGLING_END_WORDS:
+        if w_clean in dangling_end:
             diff += 8.0
         # Phạt nếu chém đôi từ ghép
         if i + 1 < len(words):
             w_next_clean = clean_word(words[i + 1])
-            if f"{w_clean} {w_next_clean}" in COMMON_COMPOUND_WORDS:
+            if f"{w_clean} {w_next_clean}" in compounds:
                 diff += 12.0
         if diff < best_diff:
             best_diff = diff
             best_split_idx = i + 1
+            
     line1 = " ".join(words[:best_split_idx]).strip()
     line2 = " ".join(words[best_split_idx:]).strip()
     return f"{line1}\n{line2}"
@@ -1020,10 +1184,10 @@ def wrap_text(text, max_chars=36):
     """Giữ hàm wrap_text tương thích, tự động gọi wrap_subtitle_2lines."""
     return wrap_subtitle_2lines(text, max_chars_per_line=max_chars)
 
-def split_segments_by_words(segments, max_chars=65, max_duration=5.0):
+def split_segments_by_words(segments, max_chars=None, max_duration=5.0, language="vi"):
     """
     Dự phòng khi không có word_timestamps: Mô phỏng word timestamps và áp dụng
-    thuật toán ngắt ngữ nghĩa thông minh tương tự để bảo vệ trọn vẹn ý nghĩa.
+    thuật toán ngắt ngữ nghĩa thông minh tương tự để bảo vệ trọn vẹn ý nghĩa theo ngôn ngữ.
     """
     new_segments = []
     for seg in segments:
@@ -1046,24 +1210,26 @@ def split_segments_by_words(segments, max_chars=65, max_duration=5.0):
             })
             curr += time_per_word
             
-        sub_segs = split_long_word_chunk(simulated_words, max_chars=max_chars, max_duration=max_duration)
+        sub_segs = split_long_word_chunk(simulated_words, max_chars=max_chars, max_duration=max_duration, language=language)
         new_segments.extend(sub_segs)
     return new_segments
 
 def split_segments_adaptive(segments, max_words=None, language=None):
-    """Bộ tách phân đoạn đa ngôn ngữ thích ứng ngữ nghĩa thông minh (Semantic Multilingual Segmenter)."""
-    lang = (language or "").strip().lower()
+    """Bộ tách phân đoạn đa ngôn ngữ thích ứng ngữ nghĩa thông minh toàn diện."""
     all_chunks = []
     
     for seg in segments:
+        seg_lang = seg.get("language") or language or "vi"
         words_data = seg.get("words", [])
+        
         # Nếu có word_timestamps trả về từ Colab: ưu tiên sử dụng
         if words_data and len(words_data) > 0:
-            all_chunks.extend(split_segment_with_words(seg))
+            all_chunks.extend(split_segment_with_words(seg, language=seg_lang))
             continue
             
-        # Nếu là tiếng Nhật hoặc Trung (không dùng dấu cách)
-        if lang in ("ja", "zh"):
+        # Nếu là tiếng Nhật hoặc Trung (không dùng dấu cách) và không có word_timestamps
+        code = (seg_lang or "").strip().lower()
+        if code.startswith("ja") or code.startswith("zh"):
             cjk_chunks = split_cjk_text(seg.get("text", ""), max_chars=20)
             if not cjk_chunks:
                 continue
@@ -1081,7 +1247,7 @@ def split_segments_adaptive(segments, max_words=None, language=None):
             continue
             
         # Tiếng Việt, Anh, Hàn, Tây Ban Nha, Bồ Đào Nha
-        all_chunks.extend(split_segments_by_words([seg]))
+        all_chunks.extend(split_segments_by_words([seg], language=seg_lang))
         
     return all_chunks
 
@@ -1177,7 +1343,7 @@ def insert_text_into_draft(project_path, segments, dry_run, log_callback, timeli
     for i, seg in enumerate(segments):
         start_sec = seg["start"]
         end_sec = seg["end"]
-        text_content_wrapped = wrap_subtitle_2lines(seg["text"], max_chars_per_line=36)
+        text_content_wrapped = wrap_subtitle_2lines(seg["text"], language=language)
         start_us = int(start_sec * 1_000_000) + timeline_offset_us
         duration_us = int((end_sec - start_sec) * 1_000_000)
         if duration_us <= 0: continue
