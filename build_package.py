@@ -83,7 +83,7 @@ def build_package():
             "language": "Tự động nhận diện",
             "max_words": 13,
             "font_size": 6.0,
-            "sync_offset_ms": -200,
+            "sync_offset_ms": 0,
             "group_subtitles": True,
             "gpu_power": "⚡ Tối ưu (Batch 18 - ~12.5GB Peak)",
             "auto_export_srt": True,

@@ -691,9 +691,9 @@ def filter_hallucinations_and_loops(segments, language=None):
         clean_list.append(s)
     return clean_list
 
-def apply_subtitle_sync_offset(segments, offset_sec=-0.20):
+def apply_subtitle_sync_offset(segments, offset_sec=0.0):
     """
-    Dịch chuyển mốc thời gian phụ đề (mặc định -200ms = -0.2s)
+    Dịch chuyển mốc thời gian phụ đề theo nhu cầu (mặc định 0ms khớp tuyệt đối 1:1 giọng đọc)
     giúp phụ đề xuất hiện đón đầu giọng đọc (Lead-in Time)
     khớp chuẩn phản xạ thị giác người xem và triệt tiêu độ trễ attention của Whisper.
     """
@@ -1493,7 +1493,7 @@ class CapCutBatchStudioApp(tk.Tk):
         self.var_language = tk.StringVar(value=self.config.get("language", "Tự động nhận diện"))
         self.var_max_words = tk.IntVar(value=self.config.get("max_words", 13))
         self.var_font_size = tk.DoubleVar(value=self.config.get("font_size", 6.0))
-        self.var_sync_offset_ms = tk.IntVar(value=self.config.get("sync_offset_ms", -200))
+        self.var_sync_offset_ms = tk.IntVar(value=self.config.get("sync_offset_ms", 0))
         self.var_group_sub = tk.BooleanVar(value=self.config.get("group_subtitles", True))
         self.gpu_power_map = {
             "⚡ Tối ưu (Batch 18 - ~12.5GB Peak)": 18,
@@ -2185,7 +2185,7 @@ class CapCutBatchStudioApp(tk.Tk):
             "language": "Tự động nhận diện",
             "max_words": 13,
             "font_size": 6.0,
-            "sync_offset_ms": -200,
+            "sync_offset_ms": 0,
             "group_subtitles": True,
             "gpu_power": "⚡ Tối ưu (Batch 18 - ~12.5GB Peak)",
             "auto_export_srt": True,
