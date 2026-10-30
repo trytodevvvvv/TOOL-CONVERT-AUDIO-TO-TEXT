@@ -43,4 +43,5 @@
 - Đảm bảo hiệu năng bộ nhớ RAM/VRAM khi nạp Whisper (`gc.collect()`, `torch.cuda.empty_cache()`).
 - Giữ gìn đồng bộ giữa mã nguồn phát triển và thư mục đóng gói `CapCut_STT_Tool/`.
 - Không theo dõi file nhị phân lớn (`ffmpeg.exe`, model `*.pt`, rar).
-- Khi đóng gói phát hành, bắt buộc tuân thủ quy trình cách ly tuyệt đối trong thư mục tạm theo RULE 3.
+- Khi đóng gói phát hành, bắt buộc tuân thủ quy trình cách ly tuyệt đối trong thư mục tạm theo RULE 3 (bao gồm `vietnamese_compounds.gz` và `budoux_models.gz`).
+- Đảm bảo chất lượng phụ đề đa ngôn ngữ (Zero-Gap Pipeline, Siêu từ điển >68k từ ghép tiếng Việt, Google BudouX cho Nhật/Trung, Eojeol cho Hàn). Tối đa 2 dòng / khối, cân đối 45% - 55%.

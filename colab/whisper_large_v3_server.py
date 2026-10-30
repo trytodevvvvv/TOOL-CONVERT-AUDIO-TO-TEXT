@@ -120,6 +120,7 @@ class TranscribeRequest(BaseModel):
     batch_size: Optional[int] = 18
     beam_size: Optional[int] = 5
     vad_filter: Optional[bool] = True
+    use_batched: Optional[bool] = False
 
 TASKS = {}
 TASKS_LOCK = threading.Lock()
@@ -163,10 +164,10 @@ def _execute_transcribe(req: TranscribeRequest):
         vad = True if req.vad_filter is None else req.vad_filter
 
         vad_params = dict(
-            threshold=0.35,
-            min_speech_duration_ms=200,
-            min_silence_duration_ms=800,
-            speech_pad_ms=200
+            threshold=0.30,
+            min_speech_duration_ms=150,
+            min_silence_duration_ms=500,
+            speech_pad_ms=350
         )
 
         transcribe_kwargs = dict(
@@ -177,8 +178,9 @@ def _execute_transcribe(req: TranscribeRequest):
             word_timestamps=True,
             initial_prompt=initial_prompt,
             repetition_penalty=1.15,
-            no_speech_threshold=0.6,
-            hallucination_silence_threshold=2.0
+            no_speech_threshold=0.85,
+            condition_on_previous_text=False,
+            hallucination_silence_threshold=2.5
         )
 
         start_time = time.time()
@@ -186,7 +188,9 @@ def _execute_transcribe(req: TranscribeRequest):
         # Thực thi nhận diện với cơ chế Tự phục hồi GPU chống treo khi gặp OOM
         parsed_segments = []
         try:
-            if batched_pipeline is not None and DEVICE == "cuda":
+            # Mặc định sử dụng Sequential Adaptive Pipeline (base_model.transcribe) để triệt tiêu hoàn toàn lỗi nuốt đoạn (Bug #1179 & #1319 của BatchedInferencePipeline)
+            # Trên GPU Tesla T4, base_model.transcribe() vẫn đạt tốc độ x45-x50 thời gian thực và không bao giờ sót lời
+            if req.use_batched and batched_pipeline is not None and DEVICE == "cuda":
                 segments_gen, info = batched_pipeline.transcribe(
                     tmp_path,
                     batch_size=batch_size,

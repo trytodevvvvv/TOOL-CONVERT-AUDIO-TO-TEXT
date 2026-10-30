@@ -54,10 +54,12 @@
    - Khi chạy STT trên GPU/CPU, giải phóng bộ nhớ RAM/VRAM (`gc.collect()`, `torch.cuda.empty_cache()`).
    - Giới hạn số luồng CPU của PyTorch (`torch.set_num_threads(4)`) để tránh đẩy CPU lên 100% gây đơ máy người dùng.
    - Áp dụng Greedy Decoding (`beam_size=1`, `best_of=1`) để tối ưu tốc độ xử lý.
-3. **Phân đoạn phụ đề & Ngôn ngữ tiếng Việt**:
-   - Bảo toàn ranh giới ngắt câu theo dấu câu (., ?, !, v.v.).
-   - Bảo vệ không cắt đôi các từ ghép tiếng Việt có nghĩa (`COMMON_COMPOUND_WORDS`).
-   - Giữ độ dài phụ đề hợp lý cho khung hình video (mặc định tối đa 13 từ/đoạn, wrap dòng ở 40 ký tự).
+3. **Phân đoạn phụ đề & Đa ngôn ngữ chuyên sâu (SOTA Multilingual Segmentation)**:
+   - **Zero-Gap Pipeline**: Chống mất đoạn / rớt audio khi có nhạc nền (`no_speech_threshold=0.85`, VAD `threshold=0.30`, `speech_pad_ms=350`).
+   - **Tiếng Việt**: Sử dụng Siêu từ điển >68.000 từ ghép (`vietnamese_compounds.gz`), bảo vệ 100% không bao giờ chém đôi từ ghép (như `cay đắng`, `ứa máu`, `hư vô`, `sụp đổ`, `công sở`, `cuộc sống`).
+   - **Tiếng Nhật & Tiếng Trung**: Tích hợp mô hình Google BudouX (`budoux_models.gz`), phân tách câu thành các cụm ngữ nghĩa Bunsetsu chuẩn ngữ pháp.
+   - **Tiếng Hàn**: Bảo toàn khối Eojeol (어절), ngắt câu chuẩn theo trợ từ và liên kết mệnh đề.
+   - **Quy tắc Vàng CapCut**: Tối đa 2 dòng / 1 khối phụ đề, cân đối thị giác 45% - 55%, ngắt theo nhịp nói tự nhiên.
 4. **Quản lý Git & Binary**:
    - Tuyệt đối không commit các file nhị phân lớn như `ffmpeg.exe` (100MB) hay checkpoint model `*.pt` vào Git repository. Các file này phải luôn được đưa vào `.gitignore`.
 

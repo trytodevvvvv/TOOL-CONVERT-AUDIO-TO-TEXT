@@ -75,6 +75,13 @@ def build_package():
                 f.write("imageio-ffmpeg>=0.4.8\n")
         print("  -> Da sao chep: requirements.txt")
 
+        # 1.5 Sao chép Siêu từ điển tiếng Việt và Mô hình BudouX
+        for model_file in ["vietnamese_compounds.gz", "budoux_models.gz"]:
+            m_path = os.path.join(workspace_dir, model_file)
+            if os.path.exists(m_path):
+                shutil.copy2(m_path, pkg_dir)
+                print(f"  -> Da sao chep: {model_file}")
+
         # 2. Khởi tạo file cấu hình mới tinh (Factory Reset - Tuyệt đối không chứa đường dẫn máy cá nhân)
         print("[2/5] Khoi tao config.json sach 100% (Factory Reset)...")
         clean_config = {
@@ -85,7 +92,7 @@ def build_package():
             "font_size": 6.0,
             "sync_offset_ms": 0,
             "group_subtitles": True,
-            "gpu_power": "⚡ Tối ưu (Batch 18 - ~12.5GB Peak)",
+            "gpu_power": "🎯 Chuẩn xác 100% (Sequential Zero-Gap - Đề xuất)",
             "auto_export_srt": True,
             "output_dir": ""
         }

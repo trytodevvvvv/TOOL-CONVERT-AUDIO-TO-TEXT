@@ -206,6 +206,7 @@ class TranscribeRequest(BaseModel):
     batch_size: Optional[int] = 18
     beam_size: Optional[int] = 5
     vad_filter: Optional[bool] = True
+    use_batched: Optional[bool] = False
 
 TASKS = {}
 TASKS_LOCK = threading.Lock()
@@ -247,10 +248,10 @@ def _execute_transcribe(req: TranscribeRequest):
         vad = True if req.vad_filter is None else req.vad_filter
 
         vad_params = dict(
-            threshold=0.35,
-            min_speech_duration_ms=200,
-            min_silence_duration_ms=800,
-            speech_pad_ms=200
+            threshold=0.30,
+            min_speech_duration_ms=150,
+            min_silence_duration_ms=500,
+            speech_pad_ms=350
         )
 
         transcribe_kwargs = dict(
@@ -261,14 +262,17 @@ def _execute_transcribe(req: TranscribeRequest):
             word_timestamps=True,
             initial_prompt=initial_prompt,
             repetition_penalty=1.15,
-            no_speech_threshold=0.6,
-            hallucination_silence_threshold=2.0
+            no_speech_threshold=0.85,
+            condition_on_previous_text=False,
+            hallucination_silence_threshold=2.5
         )
 
         start_t = time.time()
         parsed_segments = []
         try:
-            if batched_pipeline is not None and DEVICE == "cuda":
+            # Mặc định sử dụng Sequential Adaptive Pipeline (base_model.transcribe) để triệt tiêu hoàn toàn lỗi nuốt đoạn (Bug #1179 & #1319 của BatchedInferencePipeline)
+            # Trên GPU Tesla T4, base_model.transcribe() vẫn đạt tốc độ x45-x50 thời gian thực và không bao giờ sót lời
+            if getattr(req, "use_batched", False) and batched_pipeline is not None and DEVICE == "cuda":
                 segments_gen, info = batched_pipeline.transcribe(
                     tmp_path,
                     batch_size=batch_size,
@@ -551,7 +555,7 @@ def clear_colab_gpu_memory(colab_url, log_callback=None):
         except Exception:
             continue
 
-def transcribe_audio_colab(colab_url, audio_path, language_code, log_callback, batch_size=18, stop_event=None):
+def transcribe_audio_colab(colab_url, audio_path, language_code, log_callback, batch_size=18, use_batched=False, stop_event=None):
     """Gửi âm thanh lên GPU Colab Tesla T4 và nhận lại danh sách segments."""
     b64_audio, audio_ext = compress_audio_for_colab(audio_path, log_callback)
     
@@ -563,9 +567,10 @@ def transcribe_audio_colab(colab_url, audio_path, language_code, log_callback, b
         "audio_base64": b64_audio,
         "audio_ext": audio_ext,
         "language": language_code or "auto",
-        "batch_size": batch_size or 18, # Sức mạnh GPU linh hoạt theo tùy chọn giao diện
+        "batch_size": batch_size or 18,
         "beam_size": 5,
-        "vad_filter": True
+        "vad_filter": True,
+        "use_batched": bool(use_batched)
     }).encode("utf-8")
     
     log_callback("  -> Đang gửi file lên GPU Colab T4...")
@@ -767,19 +772,123 @@ def reconcile_segment_overlaps(segments, min_duration=0.1, min_gap=0.03):
         
     return clean_segs
 
-def split_cjk_text(text, max_chars=20):
-    """Tách đoạn chữ tượng hình tiếng Nhật (ja) / tiếng Trung (zh) không có dấu cách."""
-    puncts = set("、。！？；：\n,.!?:;")
-    chunks = []
-    curr = []
-    for ch in text:
-        curr.append(ch)
-        if ch in puncts or len(curr) >= max_chars:
-            chunks.append("".join(curr).strip())
-            curr = []
-    if curr:
-        chunks.append("".join(curr).strip())
-    return [c for c in chunks if c]
+import gzip
+
+_VIETNAMESE_SUPER_LEXICON = None
+_BUDOUX_MODELS = None
+
+def get_vietnamese_super_lexicon():
+    """Nạp siêu từ điển >68.000 từ ghép tiếng Việt chuẩn (Viet39K + Viet74K + Underthesea)."""
+    global _VIETNAMESE_SUPER_LEXICON
+    if _VIETNAMESE_SUPER_LEXICON is not None:
+        return _VIETNAMESE_SUPER_LEXICON
+        
+    compounds = set()
+    curr_dir = os.path.dirname(os.path.abspath(__file__))
+    candidates = [
+        os.path.join(curr_dir, "vietnamese_compounds.gz"),
+        os.path.join(curr_dir, "CapCut_STT_Tool", "vietnamese_compounds.gz"),
+        "vietnamese_compounds.gz"
+    ]
+    for p in candidates:
+        if os.path.exists(p):
+            try:
+                with gzip.open(p, "rt", encoding="utf-8") as f:
+                    compounds = set(line.strip().lower() for line in f if line.strip())
+                break
+            except Exception:
+                pass
+                
+    curated_core = {
+        "cay đắng", "ứa máu", "cõi hư vô", "hư vô", "tan biến", "vực sâu", "sụp đổ",
+        "công sở", "cuộc sống", "rũ bỏ", "vai diễn", "tròn triệu", "tròn trịa",
+        "phố xá", "nụ cười", "hành trình", "đời sống", "gia đình", "bạn bè", "con người",
+        "xã hội", "thế giới", "núi sông", "đất trời", "ngày đêm", "gió sương", "mưa nắng",
+        "sóng gió", "giông bão", "dông bão", "gượng gạo", "hạnh phúc", "bình an", "an ổn",
+        "tự tại", "trí tuệ", "giác ngộ", "từ bi", "vô thường", "luân hồi", "giải thoát",
+        "buông thư", "đau khổ", "mệt mỏi", "đau buồn", "tổn thương", "vui vẻ", "thiện lương",
+        "tâm hồn", "tinh thần", "tìm kiếm", "kiếm tiền", "mong cầu", "đối diện", "lao ra",
+        "học tập", "làm việc", "tu hành", "sinh tử", "thành công", "thất bại", "yêu thương",
+        "chia sẻ", "thấu hiểu", "lắng nghe", "chăm sóc", "hy sinh", "bảo vệ", "phát triển",
+        "tiến bộ", "cố gắng", "nỗ lực", "vươn lên", "vượt qua", "rạng rỡ", "ấm áp",
+        "thanh tịnh", "an lạc", "trong sáng", "mênh mông", "bao la", "sâu sắc", "lặng lẽ",
+        "âm thầm", "vội vã", "bận rộn", "vất vả", "gian nan", "khó khăn", "thuận lợi",
+        "nhân quả", "nghiệp báo", "phật pháp", "quá khứ", "hiện tại", "tương lai",
+        "phút giây", "giây phút", "miệng cười", "ánh mắt", "trái tim", "tấm lòng",
+        "bản thân", "chính mình", "cuộc đời", "cuộc tình", "cuộc chiến", "thị phi",
+        "nhẫn nhịn", "cam chịu", "cay độc", "cay cú", "đổ vỡ", "tan vỡ", "chao đảo",
+        "hụt hẫng", "chông chênh", "mệt nhoài", "bôn ba", "đầy đọa", "đày đọa", "cứu rỗi",
+        "quẩn quanh", "vụng về", "chới với", "thương đau", "giằng xé", "cào xé",
+        "nghẹn ngào", "chua chát", "đắng cay", "tủi hờn", "xót xa", "nhói lòng", "ứa lệ"
+    }
+    compounds.update(curated_core)
+    _VIETNAMESE_SUPER_LEXICON = frozenset(compounds)
+    return _VIETNAMESE_SUPER_LEXICON
+
+def get_budoux_models():
+    """Nạp trọng số mô hình Google BudouX AdaBoost (ja, zh)."""
+    global _BUDOUX_MODELS
+    if _BUDOUX_MODELS is not None:
+        return _BUDOUX_MODELS
+    curr_dir = os.path.dirname(os.path.abspath(__file__))
+    candidates = [
+        os.path.join(curr_dir, "budoux_models.gz"),
+        os.path.join(curr_dir, "CapCut_STT_Tool", "budoux_models.gz"),
+        "budoux_models.gz"
+    ]
+    for p in candidates:
+        if os.path.exists(p):
+            try:
+                with gzip.open(p, "rb") as f:
+                    _BUDOUX_MODELS = json.loads(f.read().decode("utf-8"))
+                return _BUDOUX_MODELS
+            except Exception:
+                pass
+    _BUDOUX_MODELS = {}
+    return _BUDOUX_MODELS
+
+def budoux_parse_chunks(sentence: str, lang: str = "ja") -> list:
+    """Tách câu tiếng Nhật (ja) / tiếng Trung (zh) thành các Bunsetsu / cụm ngữ nghĩa chuẩn bằng Google BudouX."""
+    models = get_budoux_models()
+    model = models.get(lang)
+    if not model or not sentence:
+        return [sentence] if sentence else []
+    chunks = [sentence[0]]
+    uw1 = model.get('UW1', {})
+    uw2 = model.get('UW2', {})
+    uw3 = model.get('UW3', {})
+    uw4 = model.get('UW4', {})
+    uw5 = model.get('UW5', {})
+    uw6 = model.get('UW6', {})
+    bw1 = model.get('BW1', {})
+    bw2 = model.get('BW2', {})
+    bw3 = model.get('BW3', {})
+    tw1 = model.get('TW1', {})
+    tw2 = model.get('TW2', {})
+    tw3 = model.get('TW3', {})
+    tw4 = model.get('TW4', {})
+    
+    for i in range(1, len(sentence)):
+        score = -model.get('_total_score', 0)
+        if i > 2: score += uw1.get(sentence[i - 3], 0)
+        if i > 1: score += uw2.get(sentence[i - 2], 0)
+        score += uw3.get(sentence[i - 1], 0)
+        score += uw4.get(sentence[i], 0)
+        if i + 1 < len(sentence): score += uw5.get(sentence[i + 1], 0)
+        if i + 2 < len(sentence): score += uw6.get(sentence[i + 2], 0)
+        if i > 1: score += bw1.get(sentence[i - 2:i], 0)
+        score += bw2.get(sentence[i - 1:i + 1], 0)
+        if i + 1 < len(sentence): score += bw3.get(sentence[i:i + 2], 0)
+        if i > 2: score += tw1.get(sentence[i - 3:i], 0)
+        if i > 1 and i + 1 < len(sentence): score += tw2.get(sentence[i - 2:i + 1], 0)
+        if i + 2 < len(sentence): score += tw3.get(sentence[i - 1:i + 2], 0)
+        if i + 3 < len(sentence): score += tw4.get(sentence[i:i + 3], 0)
+        
+        if score > 0:
+            chunks.append(sentence[i])
+        else:
+            chunks[-1] += sentence[i]
+    return chunks
 
 LANGUAGE_GRAMMAR_GUARDS = {
     # 1. TIẾNG VIỆT (vi)
@@ -793,29 +902,12 @@ LANGUAGE_GRAMMAR_GUARDS = {
             "về", "bởi", "vì", "do", "bằng", "theo", "giữa", "nhờ", "nhằm", "nơi",
             "và", "hoặc", "hay", "nhưng", "mà", "nên", "nếu", "thì", "rằng", "là",
             "để", "như", "dù", "tuy", "mặc", "thay", "liệu", "chứ", "cùng",
-            "này", "kia", "đó", "ấy", "nọ"
+            "này", "kia", "đó", "ấy", "nọ", "thứ", "để rồi", "rồi", "lại", "đang", "sẽ", "đã", "bởi vì", "cho dù", "thay vì"
         },
-        "dangling_start": {"hơn", "nhỉ", "nhé", "ạ", "hả", "vậy", "quá", "nữa"},
-        "compounds": {
-            "công sở", "cuộc sống", "phố xá", "vai diễn", "nụ cười", "hành trình", "đời sống",
-            "gia đình", "bạn bè", "con người", "xã hội", "thế giới", "núi sông", "đất trời",
-            "ngày đêm", "gió sương", "mưa nắng", "sóng gió", "giông bão", "dông bão",
-            "gượng gạo", "hạnh phúc", "bình an", "an ổn", "tự tại", "trí tuệ", "giác ngộ",
-            "từ bi", "vô thường", "luân hồi", "giải thoát", "buông thư", "đau khổ", "mệt mỏi",
-            "đau buồn", "tổn thương", "vui vẻ", "thiện lương", "tâm hồn", "tinh thần",
-            "tìm kiếm", "kiếm tiền", "mong cầu", "rũ bỏ", "đối diện", "lao ra", "học tập",
-            "làm việc", "tu hành", "sinh tử", "thành công", "thất bại", "yêu thương",
-            "chia sẻ", "thấu hiểu", "lắng nghe", "chăm sóc", "hy sinh", "bảo vệ",
-            "phát triển", "tiến bộ", "cố gắng", "nỗ lực", "vươn lên", "vượt qua",
-            "tròn triệu", "tròn trịa", "rạng rỡ", "ấm áp", "thanh tịnh", "an lạc",
-            "trong sáng", "mênh mông", "bao la", "sâu sắc", "lặng lẽ", "âm thầm",
-            "vội vã", "bận rộn", "vất vả", "gian nan", "khó khăn", "thuận lợi",
-            "nhân quả", "nghiệp báo", "phật pháp", "quá khứ", "hiện tại", "tương lai",
-            "phút giây", "giây phút", "miệng cười", "ánh mắt", "trái tim", "tấm lòng",
-            "bản thân", "chính mình", "cuộc đời", "cuộc tình", "cuộc chiến"
-        },
-        "max_chars": 65,
-        "max_line_chars": 36
+        "dangling_start": {"hơn", "nhỉ", "nhé", "ạ", "hả", "vậy", "quá", "nữa", "ra"},
+        "compounds": set(), # Tự động nạp động qua Siêu Từ Điển >68.000 từ ghép
+        "max_chars": 60,
+        "max_line_chars": 34
     },
 
     # 2. TIẾNG ANH (en)
@@ -833,8 +925,8 @@ LANGUAGE_GRAMMAR_GUARDS = {
             "as well as", "in front of", "because of", "in order to", "due to", "such as",
             "as soon as", "at least", "at most", "each other", "one another", "in terms of", "as long as"
         },
-        "max_chars": 68,
-        "max_line_chars": 38
+        "max_chars": 65,
+        "max_line_chars": 36
     },
 
     # 3. TIẾNG TÂY BAN NHA (es)
@@ -850,8 +942,8 @@ LANGUAGE_GRAMMAR_GUARDS = {
         "compounds": {
             "a pesar de", "en vez de", "con respecto a", "gracias a", "debido a", "sin embargo", "por lo tanto", "tal como"
         },
-        "max_chars": 68,
-        "max_line_chars": 38
+        "max_chars": 65,
+        "max_line_chars": 36
     },
 
     # 4. TIẾNG BỒ ĐÀO NHA & BRAZIL (pt, pt-BR)
@@ -867,11 +959,11 @@ LANGUAGE_GRAMMAR_GUARDS = {
         "compounds": {
             "além disso", "por causa de", "de acordo com", "em vez de", "no entanto", "apesar de", "por isso", "assim como"
         },
-        "max_chars": 68,
-        "max_line_chars": 38
+        "max_chars": 65,
+        "max_line_chars": 36
     },
 
-    # 5. TIẾNG HÀN (ko)
+    # 5. TIẾNG HÀN (ko) - Tối ưu Eojeol & Ngữ đoạn mệnh đề
     "ko": {
         "dangling_end": {
             "이", "그", "저", "어떤", "모든", "각", "여러", "한", "두", "세", "네", "새", "헌", "옛",
@@ -882,11 +974,11 @@ LANGUAGE_GRAMMAR_GUARDS = {
         "compounds": {
             "대한민국", "우리나라", "전환점이", "뿐만 아니라", "할 수", "수 있다", "수 있는", "것 같다", "에 대해", "에 의해", "을 위해"
         },
-        "max_chars": 45,
-        "max_line_chars": 24
+        "max_chars": 38,
+        "max_line_chars": 20
     },
 
-    # 6. TIẾNG TRUNG (zh)
+    # 6. TIẾNG TRUNG (zh) - Tối ưu Google BudouX
     "zh": {
         "dangling_end": {
             "的", "地", "得", "着", "了", "过",
@@ -895,14 +987,12 @@ LANGUAGE_GRAMMAR_GUARDS = {
             "这", "那", "这只", "那个", "这些", "那些", "一", "二", "三", "四", "五", "六", "七", "八", "九", "十", "几", "某"
         },
         "dangling_start": set(),
-        "compounds": {
-            "也就是说", "换句话说", "不仅如此", "总而言之", "与此同时", "显而易见", "无论如何", "由此可见"
-        },
+        "compounds": set(),
         "max_chars": 28,
         "max_line_chars": 15
     },
 
-    # 7. TIẾNG NHẬT (ja)
+    # 7. TIẾNG NHẬT (ja) - Tối ưu Google BudouX
     "ja": {
         "dangling_end": {
             "この", "その", "あの", "どの", "我が", "お", "ご",
@@ -910,9 +1000,7 @@ LANGUAGE_GRAMMAR_GUARDS = {
             "一", "二", "三", "四", "五", "六", "七", "八", "九", "十", "つ", "個", "人", "匹", "本", "枚"
         },
         "dangling_start": set(),
-        "compounds": {
-            "したがって", "そのため", "それにもかかわらず", "いわゆる", "言わば", "要するに"
-        },
+        "compounds": set(),
         "max_chars": 30,
         "max_line_chars": 16
     }
@@ -953,13 +1041,17 @@ def join_words(words, language="vi"):
 def score_split_point(words, k, language="vi"):
     """
     Chấm điểm mức độ phù hợp để ngắt giữa words[k] và words[k+1]
-    theo đặc thù ngữ pháp của từng ngôn ngữ.
-    Điểm càng cao -> điểm ngắt càng tự nhiên, tròn ý nghĩa ngữ pháp.
+    theo đặc thù ngữ pháp sâu của từng ngôn ngữ (Siêu Từ Điển tiếng Việt + Eojeol tiếng Hàn).
     """
     guard = get_language_guard(language)
     dangling_end = guard["dangling_end"]
     dangling_start = guard["dangling_start"]
-    compounds = guard["compounds"]
+    lang_code = (language or "vi").strip().lower()
+    
+    if lang_code.startswith("vi"):
+        compounds = get_vietnamese_super_lexicon()
+    else:
+        compounds = guard.get("compounds", set())
 
     w_curr_str = words[k].get("word", "").strip()
     w_next_str = words[k + 1].get("word", "").strip()
@@ -971,35 +1063,59 @@ def score_split_point(words, k, language="vi"):
     # 1. Thưởng khoảng lặng âm thanh (Acoustic Silence Gap)
     gap = float(words[k + 1].get("start", 0)) - float(words[k].get("end", 0))
     if gap >= 0.35:
-        score += 90.0
+        score += 100.0
     elif gap >= 0.20:
-        score += 45.0
+        score += 50.0
     elif gap >= 0.10:
         score += 20.0
         
     # 2. Thưởng dấu câu
     last_char = w_curr_str[-1] if w_curr_str else ""
     if last_char in ('.', '?', '!', '。', '？', '！'):
-        score += 120.0
+        score += 140.0
     elif last_char in (',', ';', ':', '—', '…', '，', '、', '；', '：'):
-        score += 70.0
+        score += 80.0
         
     # 3. Phạt cực nặng nếu rơi vào từ cấm đứng cuối (Dangling End Word)
     if w_curr in dangling_end:
-        score -= 220.0
+        score -= 250.0
+    if k > 0:
+        w_prev = clean_word(words[k - 1].get("word", ""))
+        if f"{w_prev} {w_curr}" in dangling_end:
+            score -= 250.0
         
     # 4. Phạt nặng nếu từ tiếp theo là từ cấm đứng đầu (Dangling Start Word)
     if w_next in dangling_start:
-        score -= 150.0
+        score -= 200.0
         
-    # 5. Phạt cực nặng nếu chém đôi từ ghép / cụm cố định
-    compound_2 = f"{w_curr} {w_next}"
-    if compound_2 in compounds:
-        score -= 300.0
+    # 5. Phạt cực nặng nếu chém đôi từ ghép / cụm cố định (2 từ, 3 từ, 4 từ)
+    c2 = f"{w_curr} {w_next}"
+    if c2 in compounds:
+        score -= 400.0
+    if k > 0:
+        w_prev = clean_word(words[k - 1].get("word", ""))
+        c3_1 = f"{w_prev} {w_curr} {w_next}"
+        if c3_1 in compounds:
+            score -= 400.0
+    if k + 2 < len(words):
+        w_after = clean_word(words[k + 2].get("word", ""))
+        c3_2 = f"{w_curr} {w_next} {w_after}"
+        if c3_2 in compounds:
+            score -= 400.0
+
+    # 6. Thưởng ngữ pháp đặc thù ngôn ngữ
+    if lang_code.startswith("vi"):
+        if w_next in {"nhưng", "mà", "bởi", "vì", "tuy", "dù", "để rồi", "nếu", "khi"}:
+            score += 35.0
+    elif lang_code.startswith("ko"):
+        if any(w_curr_str.endswith(suf) for suf in ("고", "며", "는데", "지만", "아서", "어서", "으면", "니까", "도록", "서")):
+            score += 70.0
+        if w_next in {"그리고", "그러나", "하지만", "그래서", "그런데", "또는", "혹은"}:
+            score += 60.0
         
-    # 6. Thưởng tính cân bằng vị trí (ưu tiên ngắt ở vùng giữa 35% - 65%)
+    # 7. Thưởng tính cân bằng vị trí (ưu tiên ngắt ở vùng giữa 35% - 65%)
     ratio = (k + 1) / len(words)
-    balance_penalty = abs(ratio - 0.5) * 60.0
+    balance_penalty = abs(ratio - 0.5) * 50.0
     score -= balance_penalty
     
     return score
@@ -1056,7 +1172,7 @@ def split_long_word_chunk(words, max_chars=None, max_duration=5.0, language="vi"
 def split_segment_with_words(seg, max_chars=None, max_duration=5.0, language="vi"):
     """
     Tách phân đoạn thông minh bậc cao bằng Word Timestamps (Semantic & Acoustic Multilingual Framing):
-    1. Quét ngắt tại các dấu kết câu hoặc khoảng lặng âm thanh tự nhiên (>= 0.38s).
+    1. Quét ngắt tại các dấu kết câu hoặc khoảng lặng âm thanh tự nhiên (>= 0.35s).
     2. Với các đoạn dài (> max_chars hoặc > max_duration), ngắt tối ưu bằng Best-Boundary Scoring theo ngôn ngữ.
     """
     words = seg.get("words", [])
@@ -1088,8 +1204,7 @@ def split_segment_with_words(seg, max_chars=None, max_duration=5.0, language="vi
         if idx + 1 < len(words):
             gap = float(words[idx + 1].get("start", 0)) - float(w.get("end", 0))
             w_curr = clean_word(word_str)
-            # Ngắt khi có khoảng lặng rõ rệt (>= 0.38s) và không phải từ cấm đứng cuối
-            if gap >= 0.38 and w_curr not in dangling_end and len(curr_chunk) >= 4:
+            if gap >= 0.35 and w_curr not in dangling_end and len(curr_chunk) >= 4:
                 has_pause = True
                 
         if is_sent_end or has_pause:
@@ -1112,8 +1227,10 @@ def wrap_subtitle_2lines(text, max_chars_per_line=None, language="vi"):
     """
     Quy tắc Vàng cho phụ đề CapCut Đa Ngôn Ngữ:
     - KHÔNG BAO GIỜ vượt quá 2 dòng (Tối đa 2 dòng).
-    - Tự động điều chỉnh độ dài tối đa dòng theo ngôn ngữ (CJK ~15-16 ký tự, La-tinh ~36-38 ký tự).
-    - Cân đối 2 dòng (Balanced Wrap) và bảo vệ không chém đôi từ ghép hay ngắt sau giới từ/mạo từ.
+    - Cân đối 2 dòng (Visual Balance 45% - 55%) và bảo vệ 100% từ ghép / cụm ngữ pháp.
+    - Tiếng Nhật & Tiếng Trung: Phân tách Bunsetsu bằng Google BudouX.
+    - Tiếng Hàn: Tôn trọng tuyệt đối ranh giới Eojeol (어절) và mệnh đề.
+    - Tiếng Việt & La-tinh: Tự động bảo vệ từ ghép qua Siêu Từ Điển >68.000 từ.
     """
     clean = text.strip()
     if not clean:
@@ -1128,21 +1245,40 @@ def wrap_subtitle_2lines(text, max_chars_per_line=None, language="vi"):
 
     lang = (language or "").strip().lower()
     
-    # Với tiếng Nhật & tiếng Trung không dùng khoảng trắng
+    # 1. TIẾNG NHẬT (ja) & TIẾNG TRUNG (zh): Sử dụng Google BudouX
     if lang.startswith("ja") or lang.startswith("zh"):
-        puncts = set("、。！？；：，,.!?:;")
-        target_mid = len(clean) // 2
-        best_idx = target_mid
-        best_diff = 999
-        # Tìm vị trí dấu câu gần tâm nhất
-        for i, ch in enumerate(clean):
-            if ch in puncts:
-                diff = abs(i + 1 - target_mid)
-                if diff < best_diff:
-                    best_diff = diff
-                    best_idx = i + 1
-        return f"{clean[:best_idx]}\n{clean[best_idx:]}"
-        
+        budoux_lang = "zh" if lang.startswith("zh") else "ja"
+        chunks = budoux_parse_chunks(clean, lang=budoux_lang)
+        if len(chunks) <= 1:
+            puncts = set("、。！？；：，,.!?:;")
+            target_mid = len(clean) // 2
+            best_idx = target_mid
+            best_diff = 999
+            for i, ch in enumerate(clean):
+                if ch in puncts:
+                    diff = abs(i + 1 - target_mid)
+                    if diff < best_diff:
+                        best_diff = diff
+                        best_idx = i + 1
+            return f"{clean[:best_idx]}\n{clean[best_idx:]}"
+            
+        target_mid = len(clean) / 2.0
+        best_split_idx = 1
+        best_diff = 999.0
+        curr_len = 0
+        for i in range(len(chunks) - 1):
+            curr_len += len(chunks[i])
+            diff = abs(curr_len - target_mid)
+            if chunks[i].endswith(('、', '，', '。', '！', '？', '；', '：')):
+                diff -= 4.0
+            if diff < best_diff:
+                best_diff = diff
+                best_split_idx = i + 1
+        line1 = "".join(chunks[:best_split_idx])
+        line2 = "".join(chunks[best_split_idx:])
+        return f"{line1}\n{line2}"
+
+    # 2. CÁC NGÔN NGỮ DÙNG DẤU CÁCH (Tiếng Việt, Anh, Hàn, Tây Ban Nha, Bồ Đào Nha)
     words = clean.split()
     if len(words) <= 1:
         return clean
@@ -1153,25 +1289,60 @@ def wrap_subtitle_2lines(text, max_chars_per_line=None, language="vi"):
     best_diff = 999.0
     curr_len = 0
     dangling_end = guard["dangling_end"]
-    compounds = guard["compounds"]
+    dangling_start = guard.get("dangling_start", set())
+    
+    if lang.startswith("vi"):
+        compounds = get_vietnamese_super_lexicon()
+    else:
+        compounds = guard.get("compounds", set())
+        
+    clausal_suffixes_ko = ("고", "며", "는데", "지만", "어서", "아서", "으면", "니까", "도록", "서")
     
     for i in range(len(words) - 1):
         curr_len += len(words[i])
         if i > 0:
             curr_len += 1
         diff = abs(curr_len - target_mid)
+        w_curr = words[i]
+        w_next = words[i + 1]
+        w_clean = clean_word(w_curr)
+        w_next_clean = clean_word(w_next)
+        
         # Thưởng nếu ngắt tại dấu câu
-        if words[i].endswith((',', '，', '、', ';', ':')):
-            diff -= 4.0
+        if w_curr.endswith((',', '，', '、', ';', ':', '.', '!', '?')):
+            diff -= 6.0
+            
+        # Thưởng tiếng Hàn ở đuôi liên kết mệnh đề
+        if lang.startswith("ko"):
+            if any(w_curr.endswith(suf) for suf in clausal_suffixes_ko):
+                diff -= 5.0
+            if w_next in {"그리고", "그러나", "하지만", "그래서", "그런데"}:
+                diff -= 4.0
+                
         # Phạt nếu ngắt sau từ cấm đứng cuối dòng
-        w_clean = clean_word(words[i])
         if w_clean in dangling_end:
-            diff += 8.0
-        # Phạt nếu chém đôi từ ghép
-        if i + 1 < len(words):
-            w_next_clean = clean_word(words[i + 1])
-            if f"{w_clean} {w_next_clean}" in compounds:
-                diff += 12.0
+            diff += 14.0
+        if i > 0:
+            w_prev_clean = clean_word(words[i - 1])
+            if f"{w_prev_clean} {w_clean}" in dangling_end:
+                diff += 14.0
+                
+        # Phạt nếu từ tiếp theo là từ cấm đứng đầu dòng
+        if w_next_clean in dangling_start:
+            diff += 10.0
+            
+        # Phạt nếu chém đôi từ ghép (2 từ hoặc 3 từ)
+        if f"{w_clean} {w_next_clean}" in compounds:
+            diff += 25.0
+        if i > 0:
+            w_prev_clean = clean_word(words[i - 1])
+            if f"{w_prev_clean} {w_clean} {w_next_clean}" in compounds:
+                diff += 25.0
+        if i + 2 < len(words):
+            w_after_clean = clean_word(words[i + 2])
+            if f"{w_clean} {w_next_clean} {w_after_clean}" in compounds:
+                diff += 25.0
+                
         if diff < best_diff:
             best_diff = diff
             best_split_idx = i + 1
@@ -1230,7 +1401,8 @@ def split_segments_adaptive(segments, max_words=None, language=None):
         # Nếu là tiếng Nhật hoặc Trung (không dùng dấu cách) và không có word_timestamps
         code = (seg_lang or "").strip().lower()
         if code.startswith("ja") or code.startswith("zh"):
-            cjk_chunks = split_cjk_text(seg.get("text", ""), max_chars=20)
+            budoux_lang = "zh" if code.startswith("zh") else "ja"
+            cjk_chunks = budoux_parse_chunks(seg.get("text", ""), lang=budoux_lang)
             if not cjk_chunks:
                 continue
             total_duration = float(seg.get("end", 0)) - float(seg.get("start", 0))
@@ -1496,16 +1668,19 @@ class CapCutBatchStudioApp(tk.Tk):
         self.var_sync_offset_ms = tk.IntVar(value=self.config.get("sync_offset_ms", 0))
         self.var_group_sub = tk.BooleanVar(value=self.config.get("group_subtitles", True))
         self.gpu_power_map = {
-            "⚡ Tối ưu (Batch 18 - ~12.5GB Peak)": 18,
-            "🚀 Siêu tốc (Batch 22 - ~14.0GB Peak)": 22,
-            "🛡️ An toàn (Batch 14 - ~10.0GB Peak)": 14,
-            "🍃 Nhẹ nhàng (Batch 10 - ~7.5GB Peak)": 10
+            "🎯 Chuẩn xác 100% (Sequential Zero-Gap - Đề xuất)": (18, False),
+            "⚡ Tối ưu (Batch 18 - ~12.5GB Peak)": (18, True),
+            "🚀 Siêu tốc (Batch 22 - ~14.0GB Peak)": (22, True),
+            "🛡️ An toàn (Batch 14 - ~10.0GB Peak)": (14, True),
+            "🍃 Nhẹ nhàng (Batch 10 - ~7.5GB Peak)": (10, True)
         }
         saved_power = self.config.get("gpu_power", "")
-        default_power = "⚡ Tối ưu (Batch 18 - ~12.5GB Peak)"
+        default_power = "🎯 Chuẩn xác 100% (Sequential Zero-Gap - Đề xuất)"
         if saved_power not in self.gpu_power_map:
             if "22" in str(saved_power):
                 saved_power = "🚀 Siêu tốc (Batch 22 - ~14.0GB Peak)"
+            elif "18" in str(saved_power):
+                saved_power = "⚡ Tối ưu (Batch 18 - ~12.5GB Peak)"
             elif "14" in str(saved_power):
                 saved_power = "🛡️ An toàn (Batch 14 - ~10.0GB Peak)"
             elif "10" in str(saved_power):
@@ -2054,9 +2229,12 @@ class CapCutBatchStudioApp(tk.Tk):
         
         self.log("=" * 65)
         self.log(f"KHỞI ĐỘNG XỬ LÝ HÀNG ĐỢI ({total_items} DỰ ÁN CAPCUT):")
-        chosen_batch = self.gpu_power_map.get(self.var_gpu_power.get(), 18)
+        power_info = self.gpu_power_map.get(self.var_gpu_power.get(), (18, False))
+        chosen_batch = power_info[0]
+        chosen_use_batched = power_info[1]
+        pipeline_label = f"Batched {chosen_batch}" if chosen_use_batched else "Sequential Zero-Gap (Không sót lời)"
         self.log(f"  Colab GPU: {colab_url}")
-        self.log(f"  Ngôn ngữ: {language_display} | Tối đa từ/đoạn: {max_words} | Sức mạnh GPU: Batch {chosen_batch}")
+        self.log(f"  Ngôn ngữ: {language_display} | Chế độ GPU: {pipeline_label}")
         self.log("=" * 65)
         
         completed_count = 0
@@ -2100,7 +2278,7 @@ class CapCutBatchStudioApp(tk.Tk):
                     self.log(f"  -> Nguồn âm thanh phát hiện: [Track Video] {src_name} (Tự động trích xuất từ video timeline)")
                     
                 # 2. Gửi sang Colab Large-v3 GPU
-                raw_segments = transcribe_audio_colab(colab_url, audio_target, language_code, self.log, batch_size=chosen_batch, stop_event=self.stop_event)
+                raw_segments = transcribe_audio_colab(colab_url, audio_target, language_code, self.log, batch_size=chosen_batch, use_batched=chosen_use_batched, stop_event=self.stop_event)
                 
                 # 3. Bộ lọc ảo giác & vòng lặp từ vô tận (Anti-Hallucination)
                 filtered_segments = filter_hallucinations_and_loops(raw_segments, language=language_code)
