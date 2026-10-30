@@ -16,6 +16,10 @@
   4. CHỈ bắt đầu chỉnh sửa mã nguồn sau khi người dùng đã phê duyệt phương án.
 
 ### 🚨 RULE 3: QUY TẮC ĐÓNG GÓI PHÂN PHỐI SẠCH & CÁCH LY TUYỆT ĐỐI (ZERO-DATA LEAK & ISOLATED PACKAGING)
+- **CHỈ ĐÓNG GÓI KHI CÓ CHỈ THỊ RÕ RÀNG TỪ NGƯỜI DÙNG (MANDATORY)**:
+  + **TUYỆT ĐỐI KHÔNG** tự ý chạy script đóng gói (`python build_package.py`) hay tự tạo file nén ZIP phân phối sau khi hoàn thành code/sửa lỗi.
+  + **CHỈ ĐƯỢC PHÉP ĐÓNG GÓI** khi người dùng đưa ra chỉ thị hoặc mệnh lệnh rõ ràng: **"đóng gói ứng dụng cho tôi"** (hoặc tương đương bằng văn bản rõ ràng).
+  + Giữ cho kho mã nguồn và thư mục làm việc luôn gọn gàng, tránh tốn tài nguyên và thời gian nén lặp lại không cần thiết khi người dùng đang trong quá trình thử nghiệm.
 - **Cách ly hoàn toàn qua thư mục tạm (%TEMP%)**:
   + Tuyệt đối **KHÔNG** sinh ra các thư mục build/staging trung gian trong cây thư mục source code (không tạo `build/`, `dist/`, `package/` làm bẩn kho mã nguồn).
   + Toàn bộ quá trình gom file, lọc rác và đóng gói bắt buộc phải thực hiện trong thư mục tạm của hệ điều hành (`tempfile.mkdtemp()`).

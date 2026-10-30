@@ -16,6 +16,10 @@
   4. CHỈ bắt đầu chỉnh sửa mã nguồn sau khi người dùng đã phê duyệt phương án.
 
 ### 🚨 RULE 3: QUY TẮC ĐÓNG GÓI PHÂN PHỐI SẠCH & CÁCH LY TUYỆT ĐỐI (ZERO-DATA LEAK & ISOLATED PACKAGING)
+- **CHỈ ĐÓNG GÓI KHI CÓ CHỈ THỊ RÕ RÀNG TỪ NGƯỜI DÙNG (MANDATORY)**:
+  + **TUYỆT ĐỐI KHÔNG** tự ý chạy script đóng gói (`python build_package.py`) hay tự tạo file nén ZIP phân phối sau khi hoàn thành code/sửa lỗi.
+  + **CHỈ ĐƯỢC PHÉP ĐÓNG GÓI** khi người dùng đưa ra chỉ thị hoặc mệnh lệnh rõ ràng: **"đóng gói ứng dụng cho tôi"** (hoặc tương đương bằng văn bản rõ ràng).
+  + Giữ cho kho mã nguồn và thư mục làm việc luôn gọn gàng, tránh tốn tài nguyên và thời gian nén lặp lại không cần thiết khi người dùng đang trong quá trình thử nghiệm.
 - **Cách ly hoàn toàn qua thư mục tạm (%TEMP%)**:
   + Tuyệt đối **KHÔNG** sinh ra các thư mục build/staging trung gian trong cây thư mục source code (không tạo `build/`, `dist/`, `package/` làm bẩn kho mã nguồn).
   + Toàn bộ quá trình gom file, lọc rác và đóng gói bắt buộc phải thực hiện trong thư mục tạm của hệ điều hành (`tempfile.mkdtemp()`).
@@ -69,5 +73,5 @@
 - [ ] Cú pháp Python hợp lệ (chạy thử import, parse AST hoặc test script).
 - [ ] Không làm phá vỡ cấu trúc JSON của CapCut (`materials`, `tracks`, `segments`).
 - [ ] Giao diện Tkinter chạy mượt mà, không bị freeze (các tác vụ nặng phải nằm trong thread riêng).
-- [ ] Khi đóng gói phân phối, đảm bảo quy trình cách ly tuyệt đối trong `%TEMP%` và tự hủy thư mục tạm theo RULE 3.
+- [ ] Tuyệt đối KHÔNG tự ý đóng gói nếu người dùng chưa yêu cầu "đóng gói ứng dụng cho tôi". Khi có lệnh, thực hiện đóng gói sạch cách ly qua %TEMP% theo RULE 3.
 - [ ] Báo cáo lại cho người dùng và chờ lệnh: nếu người dùng nói "đẩy code lên github" thì mới push.
