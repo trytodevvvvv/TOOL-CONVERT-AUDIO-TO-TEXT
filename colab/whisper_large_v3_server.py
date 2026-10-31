@@ -140,12 +140,12 @@ def _execute_transcribe(req: TranscribeRequest):
         LANGUAGE_PROMPTS = {
             "vi": "Sau đây là bài thuyết minh chất lượng cao, chuẩn tiếng Việt, có đầy đủ dấu câu, ngữ pháp chính xác, viết hoa đúng chuẩn.",
             "en": "The following is a clear, high-quality narration with correct punctuation, capitalization, and grammar.",
-            "ko": "다음은 명확하고 고품질의 내레이션으로, 올바른 맞춤법, 띄어쓰기, 문장 부호(., ?) 및 표준어를 사용합니다.",
+            "ko": "다음은 명확하고 고품질의 한국어 내레이션입니다. 표준 맞춤법과 띄어쓰기 규정을 준수하며 문장 부호(., ?)와 경어체를 정확히 사용합니다.",
             "ja": "以下は、正確な漢字・ひらがな・カタカナ表記を用い、句読点（、。）を適切に配置した自然で高品質な日本語のナレーション・朗読です。",
             "es": "La siguiente es una narración clara y de alta calidad, con puntuación correcta (¿?, ¡!), acentuación adecuada y ortografía precisa.",
             "pt": "A seguir está uma narração clara e de alta qualidade, com pontuação correta, acentuação adequada e excelente gramática em português.",
             "pt-BR": "A seguir está uma narração clara e de alta qualidade, com pontuação correta, acentuação adequada e excelente gramática em português do Brasil.",
-            "zh": "以下是一段高质量的解说，标点符号（，。）规范，语法标准，用词准确。"
+            "zh": "以下是一段高质量的解说音频，使用规范简体中文，标点符号（，。、？！）完整准确，分词自然。"
         }
 
         raw_lang = (req.language or "").strip()

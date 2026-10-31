@@ -973,7 +973,8 @@ LANGUAGE_GRAMMAR_GUARDS = {
         "dangling_end": {
             "이", "그", "저", "어떤", "모든", "각", "여러", "한", "두", "세", "네", "새", "헌", "옛",
             "그리고", "그러나", "하지만", "그래서", "또는", "그런데", "만약", "비록", "및", "혹은",
-            "너무", "매우", "가장", "아주", "더", "덜", "꼭", "잘", "못", "다", "또", "다시", "아직"
+            "너무", "매우", "가장", "아주", "더", "덜", "꼭", "잘", "못", "다", "또", "다시", "아직",
+            "많은", "적은", "큰", "작은", "좋은", "다른", "새로운", "이런", "그런", "저런", "어느", "무슨"
         },
         "dangling_start": {"것", "수", "줄", "바", "때", "분", "개", "명", "년", "월", "일"},
         "compounds": {
@@ -983,15 +984,16 @@ LANGUAGE_GRAMMAR_GUARDS = {
         "max_line_chars": 20
     },
 
-    # 6. TIẾNG TRUNG (zh) - Tối ưu Google BudouX
+    # 6. TIẾNG TRUNG (zh) - Tối ưu Google BudouX & Kinjisoku
     "zh": {
         "dangling_end": {
-            "的", "地", "得", "着", "了", "过",
-            "个", "只", "条", "张", "本", "支", "块", "份", "种", "次", "遍", "辆", "艘", "座", "间", "棵",
-            "在", "从", "到", "向", "往", "对", "给", "和", "跟", "与", "同", "因为", "所以", "但是", "而且", "如果", "虽然", "尽管", "即使", "既然", "无论", "不管", "除了", "随着", "根据",
-            "这", "那", "这只", "那个", "这些", "那些", "一", "二", "三", "四", "五", "六", "七", "八", "九", "十", "几", "某"
+            "在", "从", "到", "向", "往", "对", "给", "和", "跟", "与", "同",
+            "把", "被", "让", "叫", "使",
+            "因为", "所以", "但是", "而且", "如果", "虽然", "尽管", "即使", "既然", "无论", "不管", "除了", "随着", "根据",
+            "这", "那", "这只", "那个", "这些", "那些", "一", "二", "三", "四", "五", "六", "七", "八", "九", "十", "几", "某",
+            "为了", "由于", "鉴于"
         },
-        "dangling_start": set(),
+        "dangling_start": set("的地得着过了，。！？、；：”’）》"),
         "compounds": set(),
         "max_chars": 28,
         "max_line_chars": 15
@@ -1113,10 +1115,14 @@ def score_split_point(words, k, language="vi"):
         if w_next in {"nhưng", "mà", "bởi", "vì", "tuy", "dù", "để rồi", "nếu", "khi"}:
             score += 35.0
     elif lang_code.startswith("ko"):
-        if any(w_curr_str.endswith(suf) for suf in ("고", "며", "는데", "지만", "아서", "어서", "으면", "니까", "도록", "서")):
+        if any(w_curr.endswith(cl) for cl in ("때문에", "위해서", "덕분에", "대해서", "비해서", "통해서", "관해서")):
+            score += 90.0
+        elif any(w_curr_str.endswith(suf) for suf in ("고", "며", "는데", "지만", "아서", "어서", "으면", "니까", "도록", "서")):
             score += 70.0
         if w_next in {"그리고", "그러나", "하지만", "그래서", "그런데", "또는", "혹은"}:
             score += 60.0
+        if any(w_next.startswith(dep) for dep in ("것", "수", "줄", "바", "때", "분", "개", "명")):
+            score -= 150.0
         
     # 7. Thưởng tính cân bằng vị trí (ưu tiên ngắt ở vùng giữa 35% - 65%)
     ratio = (k + 1) / len(words)
@@ -1271,11 +1277,37 @@ def wrap_subtitle_2lines(text, max_chars_per_line=None, language="vi"):
         best_split_idx = 1
         best_diff = 999.0
         curr_len = 0
+        zh_prohibited_start = set("的地得着过了，。！？、；：”’）》")
         for i in range(len(chunks) - 1):
             curr_len += len(chunks[i])
             diff = abs(curr_len - target_mid)
-            if chunks[i].endswith(('、', '，', '。', '！', '？', '；', '：')):
-                diff -= 4.0
+            c_curr = chunks[i]
+            c_next = chunks[i + 1]
+            
+            # Thưởng dấu câu ở cuối dòng 1
+            if c_curr.endswith(('、', '，', '。', '！', '？', '；', '：')):
+                diff -= 6.0
+                
+            if budoux_lang == "zh":
+                # Thưởng nếu dòng sau bắt đầu bằng liên từ
+                if any(c_next.startswith(conj) for conj in ("但是", "然而", "所以", "而且", "不过", "因此")):
+                    diff -= 4.0
+                # Phạt cực nặng nếu dòng sau bắt đầu bằng ký tự cấm (Kinjisoku Rule: 的, 地, 得, 了, dấu câu...)
+                if c_next and c_next[0] in zh_prohibited_start:
+                    diff += 20.0
+                # Phạt nếu dòng trước kết thúc bằng giới từ / liên từ lửng
+                for dend in guard.get("dangling_end", set()):
+                    if c_curr.endswith(dend):
+                        diff += 15.0
+                        break
+            elif budoux_lang == "ja":
+                for dend in guard.get("dangling_end", set()):
+                    if c_curr.endswith(dend):
+                        diff += 15.0
+                        break
+                if any(c_next.startswith(conj) for conj in ("そして", "しかし", "だから", "けれども", "また")):
+                    diff -= 4.0
+                    
             if diff < best_diff:
                 best_diff = diff
                 best_split_idx = i + 1
@@ -1317,12 +1349,17 @@ def wrap_subtitle_2lines(text, max_chars_per_line=None, language="vi"):
         if w_curr.endswith((',', '，', '、', ';', ':', '.', '!', '?')):
             diff -= 6.0
             
-        # Thưởng tiếng Hàn ở đuôi liên kết mệnh đề
+        # Thưởng tiếng Hàn ở đuôi liên kết mệnh đề hoặc nguyên nhân / mục đích
         if lang.startswith("ko"):
-            if any(w_curr.endswith(suf) for suf in clausal_suffixes_ko):
+            if any(w_clean.endswith(cl) for cl in ("때문에", "위해서", "덕분에", "대해서", "비해서", "통해서", "관해서")):
+                diff -= 7.0
+            elif any(w_curr.endswith(suf) for suf in clausal_suffixes_ko):
                 diff -= 5.0
-            if w_next in {"그리고", "그러나", "하지만", "그래서", "그런데"}:
+            if w_next in {"그리고", "그러나", "하지만", "그래서", "그런데", "또는", "혹은"}:
                 diff -= 4.0
+            # Phạt nếu cắt rời danh từ phụ thuộc (것, 수, 줄, 때...)
+            if any(w_next_clean.startswith(dep) for dep in ("것", "수", "줄", "바", "때", "분", "개", "명")):
+                diff += 16.0
                 
         # Phạt nếu ngắt sau từ cấm đứng cuối dòng
         if w_clean in dangling_end:
