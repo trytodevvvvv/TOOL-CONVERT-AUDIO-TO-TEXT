@@ -215,7 +215,7 @@ LANGUAGE_PROMPTS = {
     "vi": "Sau đây là bài thuyết minh chất lượng cao, chuẩn tiếng Việt, có đầy đủ dấu câu, ngữ pháp chính xác, viết hoa đúng chuẩn.",
     "en": "The following is a clear, high-quality narration with correct punctuation, capitalization, and grammar.",
     "ko": "다음은 명확하고 고품질의 내레이션으로, 올바른 맞춤법, 띄어쓰기, 문장 부호(., ?) 및 표준어를 사용합니다.",
-    "ja": "以下は、句読点（、。）を適切に配置し、自然な日本語の文法と正確な漢字表記を用いた高品質なナレーションです。",
+    "ja": "以下は、正確な漢字・ひらがな・カタカナ表記を用い、句読点（、。）を適切に配置した自然で高品質な日本語のナレーション・朗読です。",
     "es": "La siguiente es una narración clara y de alta calidad, con puntuación correcta (¿?, ¡!), acentuación adecuada y ortografía precisa.",
     "pt": "A seguir está uma narração clara e de alta qualidade, com pontuação correta, acentuação adequada e excelente gramática em português.",
     "pt-BR": "A seguir está uma narração clara e de alta qualidade, com pontuação correta, acentuação adequada e excelente gramática em português do Brasil.",
@@ -676,10 +676,15 @@ def is_hallucination_or_repetitive(text, duration=None):
     # 2. Kiểm tra cụm từ YouTube outro ma:
     # CHỈ lọc khi thời lượng dài bất thường trên nền nhạc/im lặng (Whisper bịa chữ khi có nhạc)
     # NẾU câu nói là lời thuyết minh thật (nói tự nhiên trong thời lượng hợp lý <= 6.5s): GIỮ LẠI 100%!
+    is_cjk = any('\u4e00' <= ch <= '\u9fff' or '\u3040' <= ch <= '\u30ff' for ch in clean)
     for p in COMPILED_HALLUCINATIONS:
         if p.search(clean):
-            if len(words) <= 10 or (duration is not None and duration > 6.0 and len(words) <= 14):
-                return True
+            if is_cjk:
+                if len(clean) <= 25 or (duration is not None and duration > 6.0 and len(clean) <= 35):
+                    return True
+            else:
+                if len(words) <= 10 or (duration is not None and duration > 6.0 and len(words) <= 14):
+                    return True
 
     return False
 
@@ -1512,10 +1517,18 @@ def insert_text_into_draft(project_path, segments, dry_run, log_callback, timeli
     fs_val = float(font_size) if font_size else 6.0
     text_size_val = int(round(fs_val * 2))
     
+    # Tự động suy luận mã ngôn ngữ nếu language truyền vào là None/auto
+    if not language and segments:
+        for s in segments:
+            if s.get("language"):
+                language = s["language"]
+                break
+
     for i, seg in enumerate(segments):
         start_sec = seg["start"]
         end_sec = seg["end"]
-        text_content_wrapped = wrap_subtitle_2lines(seg["text"], language=language)
+        seg_lang = seg.get("language") or language or "vi"
+        text_content_wrapped = wrap_subtitle_2lines(seg["text"], language=seg_lang)
         start_us = int(start_sec * 1_000_000) + timeline_offset_us
         duration_us = int((end_sec - start_sec) * 1_000_000)
         if duration_us <= 0: continue
@@ -1676,17 +1689,9 @@ class CapCutBatchStudioApp(tk.Tk):
         }
         saved_power = self.config.get("gpu_power", "")
         default_power = "🎯 Chuẩn xác 100% (Sequential Zero-Gap - Đề xuất)"
-        if saved_power not in self.gpu_power_map:
-            if "22" in str(saved_power):
-                saved_power = "🚀 Siêu tốc (Batch 22 - ~14.0GB Peak)"
-            elif "18" in str(saved_power):
-                saved_power = "⚡ Tối ưu (Batch 18 - ~12.5GB Peak)"
-            elif "14" in str(saved_power):
-                saved_power = "🛡️ An toàn (Batch 14 - ~10.0GB Peak)"
-            elif "10" in str(saved_power):
-                saved_power = "🍃 Nhẹ nhàng (Batch 10 - ~7.5GB Peak)"
-            else:
-                saved_power = default_power
+        # Di chuyển an toàn các cấu hình cũ có chứa Batching sang chế độ Sequential Zero-Gap mặc định để chống rớt lời
+        if saved_power not in self.gpu_power_map or "Batch" in str(saved_power):
+            saved_power = default_power
         self.var_gpu_power = tk.StringVar(value=saved_power)
         self.var_output_dir = tk.StringVar(value=self.config.get("output_dir", ""))
         
@@ -2280,13 +2285,21 @@ class CapCutBatchStudioApp(tk.Tk):
                 # 2. Gửi sang Colab Large-v3 GPU
                 raw_segments = transcribe_audio_colab(colab_url, audio_target, language_code, self.log, batch_size=chosen_batch, use_batched=chosen_use_batched, stop_event=self.stop_event)
                 
+                # Tự động xác định ngôn ngữ thực tế (kể cả khi chọn Auto-Detect)
+                effective_lang = language_code
+                if not effective_lang and raw_segments:
+                    for s in raw_segments:
+                        if s.get("language"):
+                            effective_lang = s["language"]
+                            break
+                            
                 # 3. Bộ lọc ảo giác & vòng lặp từ vô tận (Anti-Hallucination)
-                filtered_segments = filter_hallucinations_and_loops(raw_segments, language=language_code)
+                filtered_segments = filter_hallucinations_and_loops(raw_segments, language=effective_lang)
                 if len(filtered_segments) < len(raw_segments):
                     self.log(f"  -> Đã lọc bỏ {len(raw_segments) - len(filtered_segments)} đoạn ảo giác / lặp từ rác!")
                 
                 # 4. Tách đoạn ngữ nghĩa thông minh thích ứng theo ngôn ngữ & Voice Pauses
-                segments = split_segments_adaptive(filtered_segments, language=language_code)
+                segments = split_segments_adaptive(filtered_segments, language=effective_lang)
                 
                 # 4b. Tinh chỉnh đồng bộ âm thanh - phụ đề (Lead-in Sync Offset)
                 sync_offset_sec = float(self.var_sync_offset_ms.get()) / 1000.0

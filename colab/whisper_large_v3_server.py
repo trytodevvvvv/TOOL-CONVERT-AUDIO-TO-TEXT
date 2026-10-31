@@ -141,7 +141,7 @@ def _execute_transcribe(req: TranscribeRequest):
             "vi": "Sau đây là bài thuyết minh chất lượng cao, chuẩn tiếng Việt, có đầy đủ dấu câu, ngữ pháp chính xác, viết hoa đúng chuẩn.",
             "en": "The following is a clear, high-quality narration with correct punctuation, capitalization, and grammar.",
             "ko": "다음은 명확하고 고품질의 내레이션으로, 올바른 맞춤법, 띄어쓰기, 문장 부호(., ?) 및 표준어를 사용합니다.",
-            "ja": "以下は、句読点（、。）を適切に配置し、自然な日本語の文法と正確な漢字表記を用いた高品質なナレーションです。",
+            "ja": "以下は、正確な漢字・ひらがな・カタカナ表記を用い、句読点（、。）を適切に配置した自然で高品質な日本語のナレーション・朗読です。",
             "es": "La siguiente es una narración clara y de alta calidad, con puntuación correcta (¿?, ¡!), acentuación adecuada y ortografía precisa.",
             "pt": "A seguir está uma narração clara e de alta qualidade, com pontuação correta, acentuação adequada e excelente gramática em português.",
             "pt-BR": "A seguir está uma narração clara e de alta qualidade, com pontuação correta, acentuação adequada e excelente gramática em português do Brasil.",
